@@ -1,80 +1,106 @@
+# ===== PART 1: imports & init =====
 import os
 import sys
 os.environ["DISCORD_NO_AUDIO"] = "1"
 
-import types
-audioop = types.ModuleType("audioop")
-sys.modules["audioop"] = audioop
+import io
+import re
+import time
+import json
+import threading
+import secrets
+import asyncio
+from datetime import datetime, timedelta
+from functools import wraps
 
+# HTTP / parsing / maps
+import requests
+import requests_cache
+from bs4 import BeautifulSoup
+
+# try import googlemaps (may be missing)
+try:
+    import googlemaps
+except Exception:
+    googlemaps = None
+
+# Discord / Flask / DB
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.keys import Keys
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
-from functools import wraps
-import asyncio
-from datetime import datetime, timedelta
+
+# Postgres
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
-import re
-import threading
-import secrets
-import time
 
-# Налаштування Flask
-app = Flask(__name__)
-app.secret_key = os.getenv('FLASK_SECRET_KEY', secrets.token_hex(32))
+# Optional selenium fallback (import only when used)
+# from selenium import webdriver
+# from selenium.webdriver.common.by import By
+# ...
 
-# Пароль для доступу до сайту
-ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'changeme123')
+# ---------- Configuration ----------
+# HTTP cache to reduce hits to DTEK (expire_after seconds)
+REQUESTS_CACHE_EXPIRE = int(os.getenv('REQUESTS_CACHE_EXPIRE', 1800))  # default 30 min
+requests_cache.install_cache('dtek_cache', backend='sqlite', expire_after=REQUESTS_CACHE_EXPIRE)
 
-# Налаштування бота
+# Google Maps client (optional — for autocomplete)
+GOOGLE_API_KEY = os.getenv('GOOGLE_MAPS_API_KEY')
+gmaps = None
+if GOOGLE_API_KEY and googlemaps:
+    try:
+        gmaps = googlemaps.Client(key=GOOGLE_API_KEY)
+        print("✅ Google Maps client initialized")
+    except Exception as e:
+        print(f"⚠️ Google Maps init error: {e}")
+else:
+    if not GOOGLE_API_KEY:
+        print("⚠️ GOOGLE_MAPS_API_KEY not set — autocomplete disabled")
+    else:
+        print("⚠️ googlemaps package not installed — autocomplete disabled")
+
+# Selenium fallback toggle (if site needs JS rendering)
+USE_SELENIUM = os.getenv('USE_SELENIUM', 'false').lower() in ('1','true','yes')
+
+# Discord & Flask settings
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents, help_command=None)
 
-# Підключення до PostgreSQL
-DATABASE_URL = os.getenv('DATABASE_URL')
+app = Flask(__name__)
+app.secret_key = os.getenv('FLASK_SECRET_KEY', secrets.token_hex(32))
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'changeme123')
 
-# Пул з'єднань для оптимізації
+# Postgres pool
+DATABASE_URL = os.getenv('DATABASE_URL')
 db_pool = None
 
 def init_db_pool():
-    """Ініціалізація пулу з'єднань"""
     global db_pool
+    if db_pool:
+        return
     try:
-        db_pool = SimpleConnectionPool(
-            minconn=1,
-            maxconn=10,
-            dsn=DATABASE_URL
-        )
-        print("✅ Пул з'єднань з БД створено")
+        db_pool = SimpleConnectionPool(minconn=1, maxconn=10, dsn=DATABASE_URL)
+        print("✅ DB pool created")
     except Exception as e:
-        print(f"❌ Помилка створення пулу з'єднань: {e}")
+        print(f"❌ DB pool error: {e}")
 
 def get_db_connection():
-    """Отримання з'єднання з пулу"""
     return db_pool.getconn()
 
 def release_db_connection(conn):
-    """Повернення з'єднання в пул"""
     db_pool.putconn(conn)
 
-# Ініціалізація бази даних
+# ===== end PART 1 =====
+# ===== PART 2: core functions (DB helpers, geocode, parser) =====
+
+# ---------- DB init (create tables) ----------
 def init_database():
-    """Створення таблиць якщо їх немає"""
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        # Таблиця користувачів
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -91,8 +117,6 @@ def init_database():
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        
-        # Таблиця сповіщень про відключення
         cur.execute("""
             CREATE TABLE IF NOT EXISTS outage_notifications (
                 id SERIAL PRIMARY KEY,
@@ -102,315 +126,190 @@ def init_database():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        
-        # Індекси
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)
-        """)
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_notifications_discord_id ON outage_notifications(discord_id)
-        """)
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_notifications_notified ON outage_notifications(notified)
-        """)
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_notifications_outage_time ON outage_notifications(outage_time)
-        """)
-        
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_notifications_discord_id ON outage_notifications(discord_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_notifications_notified ON outage_notifications(notified)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_notifications_outage_time ON outage_notifications(outage_time)")
         conn.commit()
         cur.close()
-        print("✅ Таблиці бази даних готові")
+        print("✅ Database ready")
     except Exception as e:
-        print(f"❌ Помилка ініціалізації БД: {e}")
+        print(f"❌ init_database error: {e}")
         if conn:
             conn.rollback()
     finally:
         if conn:
             release_db_connection(conn)
 
-# Функція для геокодування адреси
+# ---------- Geocoding fallback (geopy) ----------
 def geocode_address(city, street, house_number):
-    """Отримання координат за адресою"""
     try:
         from geopy.geocoders import Nominatim
         geolocator = Nominatim(user_agent="power_outage_bot")
-        
         address = f"{house_number} {street}, {city}, Ukraine"
-        location = geolocator.geocode(address, timeout=10)
-        
-        if location:
-            return location.latitude, location.longitude
+        loc = geolocator.geocode(address, timeout=10)
+        if loc:
+            return loc.latitude, loc.longitude
         return None, None
     except Exception as e:
-        print(f"Помилка геокодування: {e}")
+        print(f"geocode error: {e}")
         return None, None
 
-# ПОКРАЩЕНА функція для отримання графіка відключень
-def get_outage_schedule(city, street, house_number):
-    driver = None
-    try:
-        chrome_options = Options()
-        chrome_options.add_argument('--headless')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        chrome_options.add_argument('--window-size=1920,1080')
-        
-        # Для Render.com - вказуємо шлях до chromium
-        chrome_options.binary_location = '/usr/bin/chromium'
-        
-        driver = webdriver.Chrome(options=chrome_options)
-        driver.set_page_load_timeout(30)
-        
-        print(f"🔍 Відкриваю сайт ДТЕК...")
-        driver.get('https://www.dtek-oem.com.ua/ua/shutdowns')
-        
-        wait = WebDriverWait(driver, 20)
-        
-        # Чекаємо поки сторінка повністю завантажиться
-        time.sleep(3)
-        
-        print(f"📝 Заповнюю форму: {city}, {street}, {house_number}")
-        
-        # Заповнення поля міста з автозаповненням
-        try:
-            city_input = wait.until(EC.presence_of_element_located((
-                By.CSS_SELECTOR, 
-                'input[placeholder*="населений пункт"], input[placeholder*="Населений пункт"], input[name="city"], #city'
-            )))
-            city_input.clear()
-            city_input.send_keys(city)
-            time.sleep(2)
-            
-            # Чекаємо на автозаповнення і вибираємо перший варіант
-            try:
-                city_suggestion = wait.until(EC.element_to_be_clickable((
-                    By.CSS_SELECTOR, 
-                    '.suggestions li:first-child, .autocomplete-item:first-child, .dropdown-item:first-child'
-                )))
-                city_suggestion.click()
-                time.sleep(1)
-            except:
-                city_input.send_keys(Keys.ARROW_DOWN)
-                city_input.send_keys(Keys.ENTER)
-                time.sleep(1)
-        except Exception as e:
-            print(f"⚠️ Помилка заповнення міста: {e}")
-        
-        # Заповнення поля вулиці з автозаповненням
-        try:
-            street_input = wait.until(EC.presence_of_element_located((
-                By.CSS_SELECTOR, 
-                'input[placeholder*="вулиця"], input[placeholder*="Вулиця"], input[name="street"], #street'
-            )))
-            street_input.clear()
-            street_input.send_keys(street)
-            time.sleep(2)
-            
-            # Чекаємо на автозаповнення і вибираємо перший варіант
-            try:
-                street_suggestion = wait.until(EC.element_to_be_clickable((
-                    By.CSS_SELECTOR, 
-                    '.suggestions li:first-child, .autocomplete-item:first-child, .dropdown-item:first-child'
-                )))
-                street_suggestion.click()
-                time.sleep(1)
-            except:
-                street_input.send_keys(Keys.ARROW_DOWN)
-                street_input.send_keys(Keys.ENTER)
-                time.sleep(1)
-        except Exception as e:
-            print(f"⚠️ Помилка заповнення вулиці: {e}")
-        
-        # Заповнення поля будинку з автозаповненням
-        try:
-            house_input = wait.until(EC.presence_of_element_located((
-                By.CSS_SELECTOR, 
-                'input[placeholder*="будинок"], input[placeholder*="Будинок"], input[name="house"], #house'
-            )))
-            house_input.clear()
-            house_input.send_keys(house_number)
-            time.sleep(2)
-            
-            # Чекаємо на автозаповнення і вибираємо перший варіант
-            try:
-                house_suggestion = wait.until(EC.element_to_be_clickable((
-                    By.CSS_SELECTOR, 
-                    '.suggestions li:first-child, .autocomplete-item:first-child, .dropdown-item:first-child'
-                )))
-                house_suggestion.click()
-                time.sleep(1)
-            except:
-                house_input.send_keys(Keys.ARROW_DOWN)
-                house_input.send_keys(Keys.ENTER)
-                time.sleep(1)
-        except Exception as e:
-            print(f"⚠️ Помилка заповнення будинку: {e}")
-        
-        # Натискаємо кнопку пошуку
-        try:
-            search_button = wait.until(EC.element_to_be_clickable((
-                By.CSS_SELECTOR, 
-                'button[type="submit"], button.search-btn, button:contains("Пошук"), .search-button'
-            )))
-            driver.execute_script("arguments[0].scrollIntoView(true);", search_button)
-            time.sleep(1)
-            search_button.click()
-            print("🔍 Натиснуто кнопку пошуку")
-        except Exception as e:
-            print(f"⚠️ Помилка натискання кнопки: {e}")
-            # Спроба натиснути через JavaScript
-            try:
-                driver.execute_script("document.querySelector('button[type=\"submit\"]').click()")
-            except:
-                pass
-        
-        # Чекаємо на результати
-        time.sleep(5)
-        
-        # Пробуємо знайти графік різними способами
-        schedule_text = ""
-        outage_times = []
-        
-        # Спосіб 1: Основний контейнер з графіком
-        try:
-            schedule_elements = driver.find_elements(By.CSS_SELECTOR, 
-                '.schedule-container, .outage-schedule, .result, .schedule-info, .schedule-block, [class*="schedule"]'
-            )
-            
-            if schedule_elements:
-                for elem in schedule_elements:
-                    text = elem.text.strip()
-                    if text and len(text) > 20:
-                        schedule_text += text + "\n"
-                        print(f"✅ Знайдено графік (спосіб 1): {text[:100]}...")
-        except Exception as e:
-            print(f"⚠️ Спосіб 1 не спрацював: {e}")
-        
-        # Спосіб 2: Таблиця з графіком
-        try:
-            tables = driver.find_elements(By.CSS_SELECTOR, 'table, .table, [class*="table"]')
-            for table in tables:
-                text = table.text.strip()
-                if text and len(text) > 20:
-                    schedule_text += "\n" + text + "\n"
-                    print(f"✅ Знайдено таблицю: {text[:100]}...")
-        except Exception as e:
-            print(f"⚠️ Спосіб 2 не спрацював: {e}")
-        
-        # Спосіб 3: Окремі елементи з часом
-        try:
-            time_elements = driver.find_elements(By.CSS_SELECTOR, 
-                '.time-slot, .outage-time, .schedule-item, [class*="time"], [class*="slot"]'
-            )
-            
-            if time_elements:
-                schedule_text += "\n📅 Деталізований графік:\n"
-                for elem in time_elements:
-                    text = elem.text.strip()
-                    if text:
-                        schedule_text += f"• {text}\n"
-                        outage_times.extend(parse_outage_times(text))
-                        print(f"✅ Знайдено час: {text}")
-        except Exception as e:
-            print(f"⚠️ Спосіб 3 не спрацював: {e}")
-        
-        # Спосіб 4: Шукаємо будь-який текст з часом
-        try:
-            body_text = driver.find_element(By.TAG_NAME, 'body').text
-            time_patterns = re.findall(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', body_text)
-            
-            if time_patterns and not schedule_text:
-                schedule_text = "📋 Знайдені часи відключень:\n"
-                for pattern in time_patterns:
-                    schedule_text += f"• {pattern}\n"
-                    outage_times.extend(parse_outage_times(pattern))
-                    print(f"✅ Знайдено час з body: {pattern}")
-        except Exception as e:
-            print(f"⚠️ Спосіб 4 не спрацював: {e}")
-        
-        # Парсимо всі знайдені часи
-        all_times = parse_outage_times(schedule_text)
-        outage_times.extend(all_times)
-        outage_times = list(set(outage_times))  # Видаляємо дублікати
-        
-        driver.quit()
-        
-        if not schedule_text or len(schedule_text) < 20:
-            schedule_text = "⚠️ Графік відключень не знайдено або адреса не обслуговується ДТЕК.\nПеревір правильність адреси або спробуй пізніше."
-        
-        return {
-            'schedule': schedule_text.strip(),
-            'outage_times': outage_times
-        }
-        
-    except Exception as e:
-        if driver:
-            driver.quit()
-        error_msg = f"❌ Помилка при отриманні даних: {str(e)}\n\nМожливі причини:\n• Сайт ДТЕК тимчасово недоступний\n• Невірна адреса\n• Адреса не обслуговується ДТЕК"
-        print(error_msg)
-        return {
-            'schedule': error_msg,
-            'outage_times': []
-        }
-
+# ---------- Parse outage times helper ----------
 def parse_outage_times(text):
-    """Парсить час відключень з тексту"""
-    times = []
-    patterns = [
-        r'(\d{1,2}:\d{2})\s*[-–]\s*\d{1,2}:\d{2}',  # 10:00-12:00
-        r'з\s*(\d{1,2}:\d{2})\s*до\s*\d{1,2}:\d{2}',  # з 10:00 до 12:00
-        r'о\s*(\d{1,2}:\d{2})',  # о 10:00
-    ]
-    
-    for pattern in patterns:
-        matches = re.findall(pattern, text)
-        for match in matches:
-            if isinstance(match, tuple):
-                times.append(match[0])
-            else:
-                times.append(match)
-    
-    return list(set(times))  # Видаляємо дублікати
+    times = set()
+    # interval 10:00-12:00
+    for a,b in re.findall(r'(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})', text):
+        times.add(a)
+    # "з 10:00 до 12:00"
+    for a,b in re.findall(r'з\s*(\d{1,2}:\d{2})\s*до\s*(\d{1,2}:\d{2})', text, flags=re.IGNORECASE):
+        times.add(a)
+    # standalone times
+    for t in re.findall(r'\b(?:о\s*)?(\d{1,2}:\d{2})\b', text):
+        times.add(t)
+    normalized = []
+    for t in times:
+        try:
+            hh, mm = map(int, t.split(':'))
+            normalized.append(f"{hh:02d}:{mm:02d}")
+        except:
+            pass
+    return sorted(set(normalized))
 
-# Збереження/оновлення користувача в БД
+# ---------- get_outage_schedule: requests + BS, selenium fallback optional ----------
+def get_outage_schedule(city, street, house_number):
+    """
+    Повертає dict {'schedule': str, 'outage_times': [str,...]}
+    Стратегія: requests -> search useful selectors -> table parsing -> time regex.
+    Якщо сторінка рендериться JS і USE_SELENIUM==True — робить fallback через Selenium.
+    """
+    try:
+        base_url = "https://www.dtek-krem.com.ua/ua/shutdowns"
+        headers = {'User-Agent': 'Mozilla/5.0 (compatible; power_outage_bot/1.0)'}
+        params = {'city': city, 'street': street, 'house': house_number}
+        resp = requests.get(base_url, params=params, headers=headers, timeout=15)
+        resp.raise_for_status()
+        html = resp.text
+        soup = BeautifulSoup(html, 'lxml')
+
+        # 1. try selectors likely containing schedule
+        selectors = [
+            '[class*="schedule"]',
+            '[id*="schedule"]',
+            '[class*="shutdown"]',
+            '[id*="shutdown"]',
+            '.result',
+            '.outage-list',
+            '.table',
+            '.card'
+        ]
+        parts = []
+        for sel in selectors:
+            for el in soup.select(sel):
+                txt = el.get_text(separator="\n", strip=True)
+                if txt and len(txt) > 30:
+                    parts.append(txt)
+
+        # 2. if no parts, try the first meaningful table
+        if not parts:
+            table = soup.find('table')
+            if table:
+                rows = []
+                for tr in table.find_all('tr'):
+                    cols = [td.get_text(strip=True) for td in tr.find_all(['th','td'])]
+                    if cols:
+                        rows.append(cols)
+                if rows:
+                    md = []
+                    md.append("| " + " | ".join(rows[0]) + " |")
+                    md.append("| " + " | ".join("---" for _ in rows[0]) + " |")
+                    for r in rows[1:]:
+                        md.append("| " + " | ".join(r) + " |")
+                    parts.append("```\n" + "\n".join(md) + "\n```")
+
+        # 3. if still empty, extract time patterns from body
+        if not parts:
+            body = soup.get_text(separator="\n", strip=True)
+            times = re.findall(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', body)
+            if times:
+                parts.append("📋 Знайдені часи відключень:\n" + "\n".join(f"• {t}" for t in times))
+
+        # 4. selenium fallback (optional)
+        if not parts and USE_SELENIUM:
+            try:
+                from selenium import webdriver
+                from selenium.webdriver.chrome.options import Options
+                from selenium.webdriver.common.by import By
+                from selenium.webdriver.support.ui import WebDriverWait
+                from selenium.webdriver.support import expected_conditions as EC
+                chrome_options = Options()
+                chrome_options.add_argument('--headless')
+                chrome_options.add_argument('--no-sandbox')
+                chrome_options.add_argument('--disable-dev-shm-usage')
+                chrome_options.add_argument('--disable-gpu')
+                chrome_options.add_argument('--window-size=1920,1080')
+                # you may need to set chrome_options.binary_location = '/usr/bin/chromium' in some hosts
+                driver = webdriver.Chrome(options=chrome_options)
+                driver.get(base_url)
+                wait = WebDriverWait(driver, 20)
+                time.sleep(2)
+                # try to fill form if inputs present
+                try:
+                    city_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input')))
+                    city_input.clear()
+                    city_input.send_keys(city)
+                    time.sleep(1)
+                except:
+                    pass
+                time.sleep(2)
+                body_text = driver.find_element(By.TAG_NAME, 'body').text
+                times = re.findall(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', body_text)
+                if times:
+                    parts.append("📋 (selenium) Знайдені часи:\n" + "\n".join(f"• {t}" for t in times))
+                driver.quit()
+            except Exception as e:
+                print(f"selenium fallback error: {e}")
+
+        # 5. if still nothing -> return template
+        if not parts:
+            return {
+                'schedule': "⚠️ Графік відключень не знайдено або адреса не обслуговується ДТЕК.\nДеталізований графік: (його немає)",
+                'outage_times': []
+            }
+
+        schedule_text = "\n\n".join(parts).strip()
+        outage_times = parse_outage_times(schedule_text)
+        return {'schedule': schedule_text, 'outage_times': outage_times}
+
+    except Exception as e:
+        print(f"get_outage_schedule error: {e}")
+        return {'schedule': f"❌ Помилка при отриманні даних: {e}", 'outage_times': []}
+
+# ---------- DB helper wrappers (save/get/update user, notifications) ----------
 def save_user_address(discord_id, city, street, house_number, username=None, avatar=None):
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        # Отримуємо координати
         lat, lon = geocode_address(city, street, house_number)
-        
-        # Перевірка існування користувача
         cur.execute("SELECT id FROM users WHERE discord_id = %s", (discord_id,))
         existing = cur.fetchone()
-        
         if existing:
-            # Оновлення
             cur.execute("""
-                UPDATE users 
-                SET city = %s, street = %s, house_number = %s, 
-                    latitude = %s, longitude = %s,
-                    discord_username = %s, discord_avatar = %s,
-                    updated_at = NOW()
-                WHERE discord_id = %s
+                UPDATE users SET city=%s, street=%s, house_number=%s, latitude=%s, longitude=%s,
+                    discord_username=%s, discord_avatar=%s, updated_at=NOW()
+                WHERE discord_id=%s
             """, (city, street, house_number, lat, lon, username, avatar, discord_id))
         else:
-            # Створення
             cur.execute("""
                 INSERT INTO users (discord_id, city, street, house_number, latitude, longitude, discord_username, discord_avatar)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             """, (discord_id, city, street, house_number, lat, lon, username, avatar))
-        
         conn.commit()
         cur.close()
         return True
     except Exception as e:
-        print(f"Помилка збереження адреси: {e}")
+        print(f"save_user_address error: {e}")
         if conn:
             conn.rollback()
         return False
@@ -418,43 +317,33 @@ def save_user_address(discord_id, city, street, house_number, username=None, ava
         if conn:
             release_db_connection(conn)
 
-# Отримання адреси користувача
 def get_user_address(discord_id):
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
         cur.execute("SELECT * FROM users WHERE discord_id = %s", (discord_id,))
-        result = cur.fetchone()
-        
+        res = cur.fetchone()
         cur.close()
-        return dict(result) if result else None
+        return dict(res) if res else None
     except Exception as e:
-        print(f"Помилка отримання адреси: {e}")
+        print(f"get_user_address error: {e}")
         return None
     finally:
         if conn:
             release_db_connection(conn)
 
-# Оновлення графіка користувача
 def update_user_schedule(discord_id, schedule):
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        cur.execute("""
-            UPDATE users 
-            SET last_schedule = %s, updated_at = NOW()
-            WHERE discord_id = %s
-        """, (schedule, discord_id))
-        
+        cur.execute("UPDATE users SET last_schedule = %s, updated_at = NOW() WHERE discord_id = %s", (schedule, discord_id))
         conn.commit()
         cur.close()
         return True
     except Exception as e:
-        print(f"Помилка оновлення графіка: {e}")
+        print(f"update_user_schedule error: {e}")
         if conn:
             conn.rollback()
         return False
@@ -462,42 +351,33 @@ def update_user_schedule(discord_id, schedule):
         if conn:
             release_db_connection(conn)
 
-# Отримання всіх користувачів
 def get_all_users():
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
         cur.execute("SELECT * FROM users")
-        results = cur.fetchall()
-        
+        rows = cur.fetchall()
         cur.close()
-        return [dict(row) for row in results]
+        return [dict(r) for r in rows]
     except Exception as e:
-        print(f"Помилка отримання користувачів: {e}")
+        print(f"get_all_users error: {e}")
         return []
     finally:
         if conn:
             release_db_connection(conn)
 
-# Збереження сповіщення про відключення
 def save_outage_notification(discord_id, outage_time):
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        cur.execute("""
-            INSERT INTO outage_notifications (discord_id, outage_time, notified)
-            VALUES (%s, %s, FALSE)
-        """, (discord_id, outage_time))
-        
+        cur.execute("INSERT INTO outage_notifications (discord_id, outage_time, notified) VALUES (%s, %s, false)", (discord_id, outage_time))
         conn.commit()
         cur.close()
         return True
     except Exception as e:
-        print(f"Помилка збереження сповіщення: {e}")
+        print(f"save_outage_notification error: {e}")
         if conn:
             conn.rollback()
         return False
@@ -505,47 +385,33 @@ def save_outage_notification(discord_id, outage_time):
         if conn:
             release_db_connection(conn)
 
-# Отримання невідправлених сповіщень
 def get_pending_notifications():
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        cur.execute("""
-            SELECT * FROM outage_notifications 
-            WHERE notified = FALSE
-            ORDER BY outage_time
-        """)
-        results = cur.fetchall()
-        
+        cur.execute("SELECT * FROM outage_notifications WHERE notified = FALSE ORDER BY outage_time")
+        rows = cur.fetchall()
         cur.close()
-        return [dict(row) for row in results]
+        return [dict(r) for r in rows]
     except Exception as e:
-        print(f"Помилка отримання сповіщень: {e}")
+        print(f"get_pending_notifications error: {e}")
         return []
     finally:
         if conn:
             release_db_connection(conn)
 
-# Позначити сповіщення як відправлене
-def mark_notification_sent(notification_id):
+def mark_notification_sent(notif_id):
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        cur.execute("""
-            UPDATE outage_notifications 
-            SET notified = TRUE 
-            WHERE id = %s
-        """, (notification_id,))
-        
+        cur.execute("UPDATE outage_notifications SET notified = TRUE WHERE id = %s", (notif_id,))
         conn.commit()
         cur.close()
         return True
     except Exception as e:
-        print(f"Помилка оновлення сповіщення: {e}")
+        print(f"mark_notification_sent error: {e}")
         if conn:
             conn.rollback()
         return False
@@ -553,24 +419,18 @@ def mark_notification_sent(notification_id):
         if conn:
             release_db_connection(conn)
 
-# Видалення старих сповіщень
 def delete_old_notifications(hours=24):
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        cur.execute("""
-            DELETE FROM outage_notifications 
-            WHERE outage_time < NOW() - INTERVAL '%s hours'
-        """, (hours,))
-        
+        cur.execute("DELETE FROM outage_notifications WHERE outage_time < NOW() - INTERVAL '%s hours'", (hours,))
         conn.commit()
-        deleted = cur.rowcount
+        cnt = cur.rowcount
         cur.close()
-        return deleted
+        return cnt
     except Exception as e:
-        print(f"Помилка видалення старих сповіщень: {e}")
+        print(f"delete_old_notifications error: {e}")
         if conn:
             conn.rollback()
         return 0
@@ -578,41 +438,20 @@ def delete_old_notifications(hours=24):
         if conn:
             release_db_connection(conn)
 
-# Видалення користувача
-def delete_user(discord_id):
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        cur.execute("DELETE FROM outage_notifications WHERE discord_id = %s", (discord_id,))
-        cur.execute("DELETE FROM users WHERE discord_id = %s", (discord_id,))
-        
-        conn.commit()
-        cur.close()
-        return True
-    except Exception as e:
-        print(f"Помилка видалення користувача: {e}")
-        if conn:
-            conn.rollback()
-        return False
-    finally:
-        if conn:
-            release_db_connection(conn)
+# ===== end PART 2 =====
+# ===== PART 3: bot commands, autocomplete, tasks, run =====
 
-# Декоратор для захисту маршрутів
+# ---------- Flask routes (admin panel) ----------
 def login_required(f):
     @wraps(f)
-    def decorated_function(*args, **kwargs):
+    def decorated(*args, **kwargs):
         if not session.get('authenticated'):
             return redirect(url_for('login'))
         return f(*args, **kwargs)
-    return decorated_function
+    return decorated
 
-# Flask Routes
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/login', methods=['GET','POST'])
 def login():
-    """Сторінка входу"""
     if request.method == 'POST':
         password = request.form.get('password')
         if password == ADMIN_PASSWORD:
@@ -624,447 +463,256 @@ def login():
 
 @app.route('/logout')
 def logout():
-    """Вихід"""
     session.pop('authenticated', None)
     return redirect(url_for('login'))
 
 @app.route('/')
 @login_required
 def index():
-    """Головна сторінка з картою"""
     return render_template('index.html')
 
 @app.route('/api/users')
 @login_required
 def api_users():
-    """API для отримання користувачів з координатами"""
     users = get_all_users()
-    
-    # Фільтруємо користувачів з координатами
-    users_with_coords = []
-    for user in users:
-        if user.get('latitude') and user.get('longitude'):
-            users_with_coords.append({
-                'id': user['id'],
-                'discord_id': user['discord_id'],
-                'username': user.get('discord_username', 'Користувач'),
-                'avatar': user.get('discord_avatar', ''),
-                'city': user['city'],
-                'street': user['street'],
-                'house': user['house_number'],
-                'latitude': user['latitude'],
-                'longitude': user['longitude'],
-                'last_schedule': user.get('last_schedule', 'Немає даних')
+    out = []
+    for u in users:
+        if u.get('latitude') and u.get('longitude'):
+            out.append({
+                'id': u['id'],
+                'discord_id': u['discord_id'],
+                'username': u.get('discord_username'),
+                'city': u['city'],
+                'street': u['street'],
+                'house': u['house_number'],
+                'latitude': u['latitude'],
+                'longitude': u['longitude'],
+                'last_schedule': u.get('last_schedule')
             })
-    
-    return jsonify(users_with_coords)
+    return jsonify(out)
 
 @app.route('/api/stats')
 @login_required
 def api_stats():
-    """API для статистики"""
     users = get_all_users()
     notifications = get_pending_notifications()
-    
     return jsonify({
         'total_users': len(users),
         'pending_notifications': len(notifications),
         'users_with_coords': len([u for u in users if u.get('latitude') and u.get('longitude')])
     })
 
-# Discord Bot Commands
+# ---------- On ready ----------
 @bot.event
 async def on_ready():
-    print(f'🤖 {bot.user} успішно запущено!')
+    print(f"🤖 {bot.user} запущено")
     init_db_pool()
     init_database()
-    
-    # Синхронізуємо slash команди
     try:
         synced = await bot.tree.sync()
-        print(f'✅ Синхронізовано {len(synced)} slash команд')
+        print(f"✅ Synced {len(synced)} slash commands")
     except Exception as e:
-        print(f'❌ Помилка синхронізації команд: {e}')
-    
+        print(f"❌ sync error: {e}")
     check_schedule_updates.start()
     check_upcoming_outages.start()
-    print('✅ Бот готовий до роботи')
+    print("✅ Tasks started")
 
-# Slash команда для перевірки світла
+# ---------- Slash command and autocomplete ----------
 @bot.tree.command(name="колисвітло", description="Перевірка графіка відключень електроенергії")
-@app_commands.describe(
-    city="Місто (наприклад: Київ)",
-    street="Вулиця (наприклад: Хрещатик)",
-    house="Номер будинку (наприклад: 1)"
-)
+@app_commands.describe(city="Місто", street="Вулиця", house="Номер будинку")
 async def slash_check_power(interaction: discord.Interaction, city: str = None, street: str = None, house: str = None):
-    """Slash команда для перевірки світла"""
     await interaction.response.defer()
-    
     discord_id = interaction.user.id
     username = str(interaction.user)
     avatar = str(interaction.user.avatar.url) if interaction.user.avatar else None
-    
+
     if not city or not street or not house:
-        user_data = get_user_address(discord_id)
-        if user_data:
-            city = user_data['city']
-            street = user_data['street']
-            house = user_data['house_number']
-            await interaction.followup.send(f'📍 Використовую збережену адресу: {city}, вул. {street}, буд. {house}')
+        data = get_user_address(discord_id)
+        if data:
+            city = data['city']; street = data['street']; house = data['house_number']
+            await interaction.followup.send(f"📍 Використовую збережену адресу: {city}, {street}, {house}")
         else:
-            await interaction.followup.send('❌ Адреса не знайдена! Вкажи адресу через параметри команди.')
+            await interaction.followup.send("❌ Адреса не знайдена, вкажи параметри.")
             return
     else:
-        if save_user_address(discord_id, city, street, house, username, avatar):
-            await interaction.followup.send(f'✅ Адресу збережено!')
-    
-    await interaction.followup.send(f'🔍 Перевіряю графік відключень...\n⏳ Зачекай трохи...')
-    
+        save_user_address(discord_id, city, street, house, username, avatar)
+        await interaction.followup.send("✅ Адреса збережена")
+
+    await interaction.followup.send("🔍 Перевіряю графік...")
+
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, get_outage_schedule, city, street, house)
-    
-    schedule = result['schedule']
-    outage_times = result['outage_times']
-    
+    res = await loop.run_in_executor(None, get_outage_schedule, city, street, house)
+
+    schedule = res.get('schedule', '')
+    outage_times = res.get('outage_times', [])
+
     update_user_schedule(discord_id, schedule)
-    
-    for time_str in outage_times:
+
+    # schedule may be long
+    if schedule and len(schedule) > 1900:
+        await interaction.followup.send(file=discord.File(fp=io.BytesIO(schedule.encode('utf-8')), filename='schedule.txt'))
+    else:
+        embed = discord.Embed(title="⚡ Графік відключень електроенергії", description=schedule or "Немає деталей", color=discord.Color.blue())
+        embed.add_field(name="📍 Адреса", value=f"{city}, {street}, {house}", inline=False)
+        embed.set_footer(text="Дані отримані автоматично")
+        await interaction.followup.send(embed=embed)
+
+    # schedule -> extract times and save notifications
+    for t in outage_times:
         try:
             now = datetime.now()
-            hour, minute = map(int, time_str.split(':'))
-            outage_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            
-            if outage_time < now:
-                outage_time += timedelta(days=1)
-            
-            save_outage_notification(discord_id, outage_time)
-        except:
+            hh, mm = map(int, t.split(':'))
+            ot = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if ot < now:
+                ot += timedelta(days=1)
+            save_outage_notification(discord_id, ot)
+        except Exception:
             pass
-    
-    embed = discord.Embed(
-        title="⚡ Графік відключень електроенергії",
-        description=schedule,
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="📍 Адреса", value=f"{city}, вул. {street}, буд. {house}", inline=False)
-    embed.set_footer(text="Дані з сайту ДТЕК • Автоматична перевірка активна")
-    
-    await interaction.followup.send(embed=embed)
 
-# Slash команда для перегляду адреси
-@bot.tree.command(name="моядреса", description="Показати збережену адресу")
-async def slash_my_address(interaction: discord.Interaction):
-    """Показує збережену адресу"""
-    user_data = get_user_address(interaction.user.id)
-    
-    if user_data:
-        embed = discord.Embed(
-            title="📍 Твоя збережена адреса",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Місто", value=user_data['city'], inline=True)
-        embed.add_field(name="Вулиця", value=user_data['street'], inline=True)
-        embed.add_field(name="Будинок", value=user_data['house_number'], inline=True)
-        embed.set_footer(text=f"Оновлено: {user_data['updated_at']}")
-        await interaction.response.send_message(embed=embed)
-    else:
-        await interaction.response.send_message('❌ Адреса не знайдена! Використай `/колисвітло` щоб зберегти адресу.')
+# Autocomplete handlers
+@slash_check_power.autocomplete('city')
+async def city_autocomplete(interaction: discord.Interaction, current: str):
+    choices = []
+    if gmaps and current:
+        try:
+            preds = gmaps.places_autocomplete(input_text=current, components={'country':['UA']}, types="(regions)")
+            for p in preds[:25]:
+                desc = p.get('description')
+                if desc:
+                    choices.append(app_commands.Choice(name=desc, value=desc))
+        except Exception as e:
+            print(f"city autocomplete error: {e}")
+    return choices[:25]
 
-# Slash команда для видалення адреси
-@bot.tree.command(name="видалитиадресу", description="Видалити збережену адресу")
-async def slash_delete_address(interaction: discord.Interaction):
-    """Видаляє збережену адресу"""
-    if delete_user(interaction.user.id):
-        await interaction.response.send_message('✅ Адресу видалено!')
-    else:
-        await interaction.response.send_message('❌ Помилка при видаленні адреси')
+@slash_check_power.autocomplete('street')
+async def street_autocomplete(interaction: discord.Interaction, current: str):
+    choices = []
+    selected_city = getattr(interaction.namespace, 'city', None)
+    if gmaps and current and selected_city:
+        try:
+            q = f"{current}, {selected_city}"
+            preds = gmaps.places_autocomplete(input_text=q, components={'country':['UA']}, types="address")
+            for p in preds[:25]:
+                choices.append(app_commands.Choice(name=p.get('description'), value=p.get('description')))
+        except Exception as e:
+            print(f"street autocomplete error: {e}")
+    return choices[:25]
 
-# Slash команда для довідки
-@bot.tree.command(name="довідка", description="Показати список команд")
-async def slash_help(interaction: discord.Interaction):
-    """Показує довідку по командах"""
-    embed = discord.Embed(
-        title="📋 Довідка по командах",
-        description="Бот для перевірки графіків відключень електроенергії з автоматичними сповіщеннями",
-        color=discord.Color.green()
-    )
-    embed.add_field(
-        name="/колисвітло",
-        value="Перевіряє та зберігає адресу. Параметри: місто, вулиця, будинок. При повторному виклику без параметрів використає збережену адресу.",
-        inline=False
-    )
-    embed.add_field(
-        name="/моядреса",
-        value="Показує твою збережену адресу",
-        inline=False
-    )
-    embed.add_field(
-        name="/видалитиадресу",
-        value="Видаляє збережену адресу та вимикає сповіщення",
-        inline=False
-    )
-    embed.add_field(
-        name="🔔 Автоматичні сповіщення",
-        value="• Сповіщення про зміни в графіку (кожні 30 хв)\n• Попередження за 30 хв до відключення\n• Всі сповіщення надходять в особисті повідомлення",
-        inline=False
-    )
-    embed.set_footer(text="Бот зроблено завдяки вірі в пельмені 🥟")
-    await interaction.response.send_message(embed=embed)
+@slash_check_power.autocomplete('house')
+async def house_autocomplete(interaction: discord.Interaction, current: str):
+    choices = []
+    sel_city = getattr(interaction.namespace, 'city', None)
+    sel_street = getattr(interaction.namespace, 'street', None)
+    if sel_city and sel_street:
+        base = f"{sel_street}, {sel_city}"
+        examples = []
+        if current and any(ch.isdigit() for ch in current):
+            examples.append(f"{current} {sel_street}, {sel_city}")
+        examples += [f"1 {base}", f"2 {base}", f"10 {base}"]
+        for ex in examples[:25]:
+            choices.append(app_commands.Choice(name=ex, value=ex))
+    return choices[:25]
 
-# Старі text команди (залишаємо для сумісності)
-@bot.command(
-    name='колисвітло',
-    help='Перевіряє графік відключень електроенергії',
-    brief='Перевірка графіка відключень',
-    description='Перевіряє графік відключень для вказаної адреси. Приклад: /колисвітло Київ Хрещатик 1'
-)
-async def check_power(ctx, city: str = None, street: str = None, house: str = None):
-    """Перевіряє графік відключень електроенергії"""
+# ---------- Text-command compatibility (optional) ----------
+@bot.command(name='колисвітло')
+async def check_power_cmd(ctx, city: str = None, street: str = None, house: str = None):
+    # keep similar behavior as slash
     discord_id = ctx.author.id
     username = str(ctx.author)
     avatar = str(ctx.author.avatar.url) if ctx.author.avatar else None
-    
+
     if not city or not street or not house:
-        user_data = get_user_address(discord_id)
-        if user_data:
-            city = user_data['city']
-            street = user_data['street']
-            house = user_data['house_number']
-            await ctx.send(f'📍 Використовую збережену адресу: {city}, вул. {street}, буд. {house}')
+        data = get_user_address(discord_id)
+        if data:
+            city = data['city']; street = data['street']; house = data['house_number']
+            await ctx.send(f"📍 Використовую збережену адресу: {city}, {street}, {house}")
         else:
-            await ctx.send('❌ Адреса не знайдена! Вкажи адресу: `/колисвітло Київ Хрещатик 1` або використай slash команду')
+            await ctx.send("❌ Адреса не знайдена. Використай /колисвітло або вкажи параметри.")
             return
     else:
-        if save_user_address(discord_id, city, street, house, username, avatar):
-            await ctx.send(f'✅ Адресу збережено!')
-    
-    await ctx.send(f'🔍 Перевіряю графік відключень...\n⏳ Зачекай трохи...')
-    
+        save_user_address(discord_id, city, street, house, username, avatar)
+        await ctx.send("✅ Адреса збережена")
+
+    await ctx.send("🔍 Перевіряю графік...")
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, get_outage_schedule, city, street, house)
-    
-    schedule = result['schedule']
-    outage_times = result['outage_times']
-    
-    update_user_schedule(discord_id, schedule)
-    
-    for time_str in outage_times:
-        try:
-            now = datetime.now()
-            hour, minute = map(int, time_str.split(':'))
-            outage_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            
-            if outage_time < now:
-                outage_time += timedelta(days=1)
-            
-            save_outage_notification(discord_id, outage_time)
-        except:
-            pass
-    
-    embed = discord.Embed(
-        title="⚡ Графік відключень електроенергії",
-        description=schedule,
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="📍 Адреса", value=f"{city}, вул. {street}, буд. {house}", inline=False)
-    embed.set_footer(text="Дані з сайту ДТЕК • Автоматична перевірка активна")
-    
-    await ctx.send(embed=embed)
-
-@bot.command(
-    name='моядреса',
-    help='Показує збережену адресу',
-    brief='Переглянути адресу',
-    description='Показує твою збережену адресу для перевірки графіків відключень'
-)
-async def my_address(ctx):
-    """Показує збережену адресу"""
-    user_data = get_user_address(ctx.author.id)
-    
-    if user_data:
-        embed = discord.Embed(
-            title="📍 Твоя збережена адреса",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Місто", value=user_data['city'], inline=True)
-        embed.add_field(name="Вулиця", value=user_data['street'], inline=True)
-        embed.add_field(name="Будинок", value=user_data['house_number'], inline=True)
-        embed.set_footer(text=f"Оновлено: {user_data['updated_at']}")
+    res = await loop.run_in_executor(None, get_outage_schedule, city, street, house)
+    schedule = res.get('schedule','')
+    outage_times = res.get('outage_times',[])
+    if schedule and len(schedule) > 1900:
+        await ctx.send(file=discord.File(fp=io.BytesIO(schedule.encode('utf-8')), filename='schedule.txt'))
+    else:
+        embed = discord.Embed(title="⚡ Графік відключень", description=schedule or "Немає деталей", color=discord.Color.blue())
+        embed.add_field(name="📍 Адреса", value=f"{city}, {street}, {house}", inline=False)
         await ctx.send(embed=embed)
-    else:
-        await ctx.send('❌ Адреса не знайдена! Використай `/колисвітло` щоб зберегти адресу.')
 
-@bot.command(
-    name='видалитиадресу',
-    help='Видаляє збережену адресу',
-    brief='Видалити адресу',
-    description='Видаляє збережену адресу та вимикає автоматичні сповіщення'
-)
-async def delete_address(ctx):
-    """Видаляє збережену адресу"""
-    if delete_user(ctx.author.id):
-        await ctx.send('✅ Адресу видалено!')
-    else:
-        await ctx.send('❌ Помилка при видаленні адреси')
-
+# ---------- Background tasks ----------
 @tasks.loop(minutes=30)
 async def check_schedule_updates():
-    """Перевіряє оновлення графіка для всіх користувачів"""
     try:
         users = get_all_users()
-        print(f"🔄 Перевірка оновлень графіка для {len(users)} користувачів...")
-        
-        for user in users:
-            discord_id = user['discord_id']
-            city = user['city']
-            street = user['street']
-            house = user['house_number']
-            old_schedule = user.get('last_schedule', '')
-            
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, get_outage_schedule, city, street, house
-            )
-            new_schedule = result['schedule']
-            
-            if new_schedule != old_schedule and old_schedule:
-                update_user_schedule(discord_id, new_schedule)
-                
+        for u in users:
+            discord_id = u['discord_id']
+            city = u['city']; street = u['street']; house = u['house_number']
+            old = u.get('last_schedule','')
+            res = await asyncio.get_event_loop().run_in_executor(None, get_outage_schedule, city, street, house)
+            new = res.get('schedule','')
+            if new and old and new != old:
+                update_user_schedule(discord_id, new)
                 try:
                     user_obj = await bot.fetch_user(discord_id)
-                    embed = discord.Embed(
-                        title="🔔 Графік відключень оновився!",
-                        description=new_schedule,
-                        color=discord.Color.orange()
-                    )
-                    embed.add_field(name="📍 Адреса", value=f"{city}, вул. {street}, буд. {house}", inline=False)
-                    embed.set_footer(text="Автоматичне сповіщення")
-                    
+                    embed = discord.Embed(title="🔔 Графік оновився", description=new, color=discord.Color.orange())
+                    embed.add_field(name="📍 Адреса", value=f"{city}, {street}, {house}", inline=False)
                     await user_obj.send(embed=embed)
-                    print(f"✅ Сповіщення надіслано користувачу {discord_id}")
                 except Exception as e:
-                    print(f"❌ Не вдалося надіслати сповіщення користувачу {discord_id}: {e}")
-            
-            await asyncio.sleep(5)
-            
+                    print(f"notify user error: {e}")
+            await asyncio.sleep(1)
     except Exception as e:
-        print(f"❌ Помилка при перевірці оновлень: {e}")
+        print(f"check_schedule_updates error: {e}")
 
 @tasks.loop(minutes=5)
 async def check_upcoming_outages():
-    """Сповіщає користувачів за 30 хвилин до відключення"""
     try:
         now = datetime.now()
-        notification_time = now + timedelta(minutes=30)
-
-        notifications = get_pending_notifications()
-        print(f"⏰ Перевірка {len(notifications)} запланованих сповіщень...")
-
-        for notif in notifications:
-            outage_time = notif['outage_time']
-
-            if now < outage_time <= notification_time:
-                discord_id = notif['discord_id']
-
+        notify_at = now + timedelta(minutes=30)
+        notifs = get_pending_notifications()
+        for n in notifs:
+            ot = n['outage_time']
+            if now < ot <= notify_at:
+                discord_id = n['discord_id']
                 try:
                     user = await bot.fetch_user(discord_id)
-                    user_data = get_user_address(discord_id)
-
-                    time_until = outage_time - now
-                    minutes = int(time_until.total_seconds() / 60)
-
-                    embed = discord.Embed(
-                        title="⚠️ Попередження про відключення!",
-                        description=f"Електроенергію буде відключено через **{minutes} хвилин**\n\n🕐 Час відключення: **{outage_time.strftime('%H:%M')}**",
-                        color=discord.Color.red()
-                    )
-
-                    if user_data:
-                        embed.add_field(
-                            name="📍 Адреса",
-                            value=f"{user_data['city']}, вул. {user_data['street']}, буд. {user_data['house_number']}",
-                            inline=False
-                        )
-
-                    embed.set_footer(text="Не забудь зарядити пристрої!")
-
+                    minutes = int((ot - now).total_seconds() / 60)
+                    embed = discord.Embed(title="⚠️ Попередження про відключення", description=f"Через **{minutes} хв.**\n🕐 {ot.strftime('%H:%M')}", color=discord.Color.red())
+                    ud = get_user_address(discord_id)
+                    if ud:
+                        embed.add_field(name="📍 Адреса", value=f"{ud['city']}, {ud['street']}, {ud['house_number']}", inline=False)
                     await user.send(embed=embed)
-                    mark_notification_sent(notif['id'])
-                    print(f"✅ Попередження надіслано користувачу {discord_id}")
-
+                    mark_notification_sent(n['id'])
                 except Exception as e:
-                    print(f"❌ Не вдалося надіслати попередження користувачу {discord_id}: {e}")
-
+                    print(f"send upcoming outage error: {e}")
         deleted = delete_old_notifications(24)
-        if deleted > 0:
-            print(f"🗑️ Видалено {deleted} старих сповіщень")
-
+        if deleted:
+            print(f"Deleted {deleted} old notifications")
     except Exception as e:
-        print(f"❌ Помилка при перевірці майбутніх відключень: {e}")
+        print(f"check_upcoming_outages error: {e}")
 
-@bot.command(
-    name='довідка',
-    help='Показує список команд',
-    brief='Довідка',
-    description='Показує повну довідку по всіх доступних командах бота'
-)
-async def help_command(ctx):
-    """Показує довідку по командах"""
-    embed = discord.Embed(
-        title="📋 Довідка по командах",
-        description="Бот для перевірки графіків відключень електроенергії з автоматичними сповіщеннями\n\n💡 **Підказка:** Тепер можна використовувати slash команди! Просто напиши `/` і вибери команду зі списку.",
-        color=discord.Color.green()
-    )
-    embed.add_field(
-        name="/колисвітло [місто] [вулиця] [будинок]",
-        value="Перевіряє та зберігає адресу. При повторному виклику без параметрів використає збережену адресу.\n**Приклад:** `/колисвітло Київ Хрещатик 1`",
-        inline=False
-    )
-    embed.add_field(
-        name="/моядреса",
-        value="Показує твою збережену адресу",
-        inline=False
-    )
-    embed.add_field(
-        name="/видалитиадресу",
-        value="Видаляє збережену адресу та вимикає сповіщення",
-        inline=False
-    )
-    embed.add_field(
-        name="/довідка",
-        value="Показує цю довідку",
-        inline=False
-    )
-    embed.add_field(
-        name="🔔 Автоматичні сповіщення",
-        value="• Сповіщення про зміни в графіку (кожні 30 хв)\n• Попередження за 30 хв до відключення\n• Всі сповіщення надходять в особисті повідомлення",
-        inline=False
-    )
-    embed.add_field(
-        name="✨ Нові можливості",
-        value="• **Автозаповнення адрес** - бот автоматично підказує адреси з сайту ДТЕК\n• **Slash команди** - зручніший спосіб використання команд\n• **Покращений парсинг графіків** - більш точне визначення часу відключень",
-        inline=False
-    )
-    embed.set_footer(text="Бот зроблено завдяки вірі в пельмені 🥟")
-    await ctx.send(embed=embed)
-
+# ---------- Run helpers ----------
 def run_bot():
-    """Запуск Discord бота в окремому потоці"""
     TOKEN = os.getenv('DISCORD_BOT_TOKEN')
-    if TOKEN:
-        bot.run(TOKEN)
-    else:
-        print("❌ DISCORD_BOT_TOKEN не встановлено!")
+    if not TOKEN:
+        print("❌ DISCORD_BOT_TOKEN not set")
+        return
+    bot.run(TOKEN)
 
 def run_flask():
-    """Запуск Flask сервера"""
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
 
+# ---------- Main entry ----------
 if __name__ == '__main__':
-    # Запускаємо бота в окремому потоці
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    
-    # Запускаємо Flask в основному потоці
+    # start bot in thread and run flask in main thread
+    t = threading.Thread(target=run_bot, daemon=True)
+    t.start()
     run_flask()
+
+# ===== end PART 3 =====
