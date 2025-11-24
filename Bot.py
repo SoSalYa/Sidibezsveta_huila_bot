@@ -25,26 +25,26 @@ import threading
 import secrets
 import time
 
-# Настройка Flask
+# Налаштування Flask
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', secrets.token_hex(32))
 
-# Пароль для доступа к сайту (установите через переменную окружения)
+# Пароль для доступу до сайту
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'changeme123')
 
-# Настройка бота
+# Налаштування бота
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='/', intents=intents)
+bot = commands.Bot(command_prefix='/', intents=intents, help_command=None)
 
-# Подключение к PostgreSQL
+# Підключення до PostgreSQL
 DATABASE_URL = os.getenv('DATABASE_URL')
 
-# Пул соединений для оптимизации
+# Пул з'єднань для оптимізації
 db_pool = None
 
 def init_db_pool():
-    """Инициализация пула соединений"""
+    """Ініціалізація пулу з'єднань"""
     global db_pool
     try:
         db_pool = SimpleConnectionPool(
@@ -52,27 +52,27 @@ def init_db_pool():
             maxconn=10,
             dsn=DATABASE_URL
         )
-        print("✅ Пул соединений с БД создан")
+        print("✅ Пул з'єднань з БД створено")
     except Exception as e:
-        print(f"❌ Ошибка создания пула соединений: {e}")
+        print(f"❌ Помилка створення пулу з'єднань: {e}")
 
 def get_db_connection():
-    """Получение соединения из пула"""
+    """Отримання з'єднання з пулу"""
     return db_pool.getconn()
 
 def release_db_connection(conn):
-    """Возврат соединения в пул"""
+    """Повернення з'єднання в пул"""
     db_pool.putconn(conn)
 
-# Инициализация базы данных
+# Ініціалізація бази даних
 def init_database():
-    """Создание таблиц если их нет"""
+    """Створення таблиць якщо їх немає"""
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Таблица пользователей
+        # Таблиця користувачів
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -90,7 +90,7 @@ def init_database():
             )
         """)
         
-        # Таблица уведомлений об отключениях
+        # Таблиця сповіщень про відключення
         cur.execute("""
             CREATE TABLE IF NOT EXISTS outage_notifications (
                 id SERIAL PRIMARY KEY,
@@ -101,7 +101,7 @@ def init_database():
             )
         """)
         
-        # Индексы
+        # Індекси
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)
         """)
@@ -117,18 +117,18 @@ def init_database():
         
         conn.commit()
         cur.close()
-        print("✅ Таблицы базы данных готовы")
+        print("✅ Таблиці бази даних готові")
     except Exception as e:
-        print(f"❌ Ошибка инициализации БД: {e}")
+        print(f"❌ Помилка ініціалізації БД: {e}")
         if conn:
             conn.rollback()
     finally:
         if conn:
             release_db_connection(conn)
 
-# Функция для геокодирования адреса
+# Функція для геокодування адреси
 def geocode_address(city, street, house_number):
-    """Получение координат по адресу"""
+    """Отримання координат за адресою"""
     try:
         from geopy.geocoders import Nominatim
         geolocator = Nominatim(user_agent="power_outage_bot")
@@ -140,10 +140,10 @@ def geocode_address(city, street, house_number):
             return location.latitude, location.longitude
         return None, None
     except Exception as e:
-        print(f"Ошибка геокодирования: {e}")
+        print(f"Помилка геокодування: {e}")
         return None, None
 
-# Функция для получения графика отключений
+# Функція для отримання графіка відключень
 def get_outage_schedule(city, street, house_number):
     driver = None
     try:
@@ -155,7 +155,7 @@ def get_outage_schedule(city, street, house_number):
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
         
-        # Для Render.com - указываем путь к chromium
+        # Для Render.com - вказуємо шлях до chromium
         chrome_options.binary_location = '/usr/bin/chromium'
         
         driver = webdriver.Chrome(options=chrome_options)
@@ -163,7 +163,7 @@ def get_outage_schedule(city, street, house_number):
         
         wait = WebDriverWait(driver, 15)
         
-        # Заполнение формы
+        # Заповнення форми
         city_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder*="населений пункт"], input[name="city"]')))
         city_input.clear()
         city_input.send_keys(city)
@@ -187,7 +187,7 @@ def get_outage_schedule(city, street, house_number):
         schedule_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '.schedule, .outage-schedule, .result')))
         schedule_text = schedule_element.text
         
-        # Получение детальной информации и времени отключений
+        # Отримання детальної інформації та часу відключень
         outage_times = []
         try:
             details = driver.find_elements(By.CSS_SELECTOR, '.schedule-item, .outage-info, .time-slot')
@@ -215,7 +215,7 @@ def get_outage_schedule(city, street, house_number):
         }
 
 def parse_outage_times(text):
-    """Парсит время отключений из текста"""
+    """Парсить час відключень з тексту"""
     times = []
     patterns = [
         r'(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})',
@@ -230,22 +230,22 @@ def parse_outage_times(text):
     
     return times
 
-# Сохранение/обновление пользователя в БД
+# Збереження/оновлення користувача в БД
 def save_user_address(discord_id, city, street, house_number, username=None, avatar=None):
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Получаем координаты
+        # Отримуємо координати
         lat, lon = geocode_address(city, street, house_number)
         
-        # Проверка существования пользователя
+        # Перевірка існування користувача
         cur.execute("SELECT id FROM users WHERE discord_id = %s", (discord_id,))
         existing = cur.fetchone()
         
         if existing:
-            # Обновление
+            # Оновлення
             cur.execute("""
                 UPDATE users 
                 SET city = %s, street = %s, house_number = %s, 
@@ -255,7 +255,7 @@ def save_user_address(discord_id, city, street, house_number, username=None, ava
                 WHERE discord_id = %s
             """, (city, street, house_number, lat, lon, username, avatar, discord_id))
         else:
-            # Создание
+            # Створення
             cur.execute("""
                 INSERT INTO users (discord_id, city, street, house_number, latitude, longitude, discord_username, discord_avatar)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -265,7 +265,7 @@ def save_user_address(discord_id, city, street, house_number, username=None, ava
         cur.close()
         return True
     except Exception as e:
-        print(f"Ошибка сохранения адреса: {e}")
+        print(f"Помилка збереження адреси: {e}")
         if conn:
             conn.rollback()
         return False
@@ -273,7 +273,7 @@ def save_user_address(discord_id, city, street, house_number, username=None, ava
         if conn:
             release_db_connection(conn)
 
-# Получение адреса пользователя
+# Отримання адреси користувача
 def get_user_address(discord_id):
     conn = None
     try:
@@ -286,13 +286,13 @@ def get_user_address(discord_id):
         cur.close()
         return dict(result) if result else None
     except Exception as e:
-        print(f"Ошибка получения адреса: {e}")
+        print(f"Помилка отримання адреси: {e}")
         return None
     finally:
         if conn:
             release_db_connection(conn)
 
-# Обновление графика пользователя
+# Оновлення графіка користувача
 def update_user_schedule(discord_id, schedule):
     conn = None
     try:
@@ -309,7 +309,7 @@ def update_user_schedule(discord_id, schedule):
         cur.close()
         return True
     except Exception as e:
-        print(f"Ошибка обновления графика: {e}")
+        print(f"Помилка оновлення графіка: {e}")
         if conn:
             conn.rollback()
         return False
@@ -317,7 +317,7 @@ def update_user_schedule(discord_id, schedule):
         if conn:
             release_db_connection(conn)
 
-# Получение всех пользователей
+# Отримання всіх користувачів
 def get_all_users():
     conn = None
     try:
@@ -330,13 +330,13 @@ def get_all_users():
         cur.close()
         return [dict(row) for row in results]
     except Exception as e:
-        print(f"Ошибка получения пользователей: {e}")
+        print(f"Помилка отримання користувачів: {e}")
         return []
     finally:
         if conn:
             release_db_connection(conn)
 
-# Сохранение уведомления об отключении
+# Збереження сповіщення про відключення
 def save_outage_notification(discord_id, outage_time):
     conn = None
     try:
@@ -352,7 +352,7 @@ def save_outage_notification(discord_id, outage_time):
         cur.close()
         return True
     except Exception as e:
-        print(f"Ошибка сохранения уведомления: {e}")
+        print(f"Помилка збереження сповіщення: {e}")
         if conn:
             conn.rollback()
         return False
@@ -360,7 +360,7 @@ def save_outage_notification(discord_id, outage_time):
         if conn:
             release_db_connection(conn)
 
-# Получение неотправленных уведомлений
+# Отримання невідправлених сповіщень
 def get_pending_notifications():
     conn = None
     try:
@@ -377,13 +377,13 @@ def get_pending_notifications():
         cur.close()
         return [dict(row) for row in results]
     except Exception as e:
-        print(f"Ошибка получения уведомлений: {e}")
+        print(f"Помилка отримання сповіщень: {e}")
         return []
     finally:
         if conn:
             release_db_connection(conn)
 
-# Пометить уведомление как отправленное
+# Позначити сповіщення як відправлене
 def mark_notification_sent(notification_id):
     conn = None
     try:
@@ -400,7 +400,7 @@ def mark_notification_sent(notification_id):
         cur.close()
         return True
     except Exception as e:
-        print(f"Ошибка обновления уведомления: {e}")
+        print(f"Помилка оновлення сповіщення: {e}")
         if conn:
             conn.rollback()
         return False
@@ -408,7 +408,7 @@ def mark_notification_sent(notification_id):
         if conn:
             release_db_connection(conn)
 
-# Удаление старых уведомлений
+# Видалення старих сповіщень
 def delete_old_notifications(hours=24):
     conn = None
     try:
@@ -425,7 +425,7 @@ def delete_old_notifications(hours=24):
         cur.close()
         return deleted
     except Exception as e:
-        print(f"Ошибка удаления старых уведомлений: {e}")
+        print(f"Помилка видалення старих сповіщень: {e}")
         if conn:
             conn.rollback()
         return 0
@@ -433,7 +433,7 @@ def delete_old_notifications(hours=24):
         if conn:
             release_db_connection(conn)
 
-# Удаление пользователя
+# Видалення користувача
 def delete_user(discord_id):
     conn = None
     try:
@@ -447,7 +447,7 @@ def delete_user(discord_id):
         cur.close()
         return True
     except Exception as e:
-        print(f"Ошибка удаления пользователя: {e}")
+        print(f"Помилка видалення користувача: {e}")
         if conn:
             conn.rollback()
         return False
@@ -455,7 +455,7 @@ def delete_user(discord_id):
         if conn:
             release_db_connection(conn)
 
-# Декоратор для защиты маршрутов
+# Декоратор для захисту маршрутів
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -467,7 +467,7 @@ def login_required(f):
 # Flask Routes
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """Страница входа"""
+    """Сторінка входу"""
     if request.method == 'POST':
         password = request.form.get('password')
         if password == ADMIN_PASSWORD:
@@ -479,30 +479,30 @@ def login():
 
 @app.route('/logout')
 def logout():
-    """Выход"""
+    """Вихід"""
     session.pop('authenticated', None)
     return redirect(url_for('login'))
 
 @app.route('/')
 @login_required
 def index():
-    """Главная страница с картой"""
+    """Головна сторінка з картою"""
     return render_template('index.html')
 
 @app.route('/api/users')
 @login_required
 def api_users():
-    """API для получения пользователей с координатами"""
+    """API для отримання користувачів з координатами"""
     users = get_all_users()
     
-    # Фильтруем пользователей с координатами
+    # Фільтруємо користувачів з координатами
     users_with_coords = []
     for user in users:
         if user.get('latitude') and user.get('longitude'):
             users_with_coords.append({
                 'id': user['id'],
                 'discord_id': user['discord_id'],
-                'username': user.get('discord_username', 'User'),
+                'username': user.get('discord_username', 'Користувач'),
                 'avatar': user.get('discord_avatar', ''),
                 'city': user['city'],
                 'street': user['street'],
@@ -530,14 +530,14 @@ def api_stats():
 # Discord Bot Commands
 @bot.event
 async def on_ready():
-    print(f'🤖 {bot.user} успішно запущений!')
+    print(f'🤖 {bot.user} успішно запущено!')
     init_db_pool()
     init_database()
     check_schedule_updates.start()
     check_upcoming_outages.start()
     print('✅ Бот готовий до роботи')
 
-@bot.command(name='когдасвет')
+@bot.command(name='колисвітло')
 async def check_power(ctx, city: str = None, street: str = None, house: str = None):
     """Перевіряє графік відключень електроенергії"""
     discord_id = ctx.author.id
@@ -552,13 +552,13 @@ async def check_power(ctx, city: str = None, street: str = None, house: str = No
             house = user_data['house_number']
             await ctx.send(f'📍 Використовую збережену адресу: {city}, вул. {street}, буд. {house}')
         else:
-            await ctx.send('❌ Адреса не знайдена! Вкажи адресу: `/когдасвет Київ Хрещатик 1`')
+            await ctx.send('❌ Адреса не знайдена! Вкажи адресу: `/колисвітло Київ Хрещатик 1`')
             return
     else:
         if save_user_address(discord_id, city, street, house, username, avatar):
             await ctx.send(f'✅ Адресу збережено!')
     
-    await ctx.send(f'🔍 Перевіряю графік відключень...\n⏳ Зачекайте...')
+    await ctx.send(f'🔍 Перевіряю графік відключень...\n⏳ Зачекай трохи...')
     
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, get_outage_schedule, city, street, house)
@@ -607,7 +607,7 @@ async def my_address(ctx):
         embed.set_footer(text=f"Оновлено: {user_data['updated_at']}")
         await ctx.send(embed=embed)
     else:
-        await ctx.send('❌ Адреса не знайдена! Використай `/когдасвет` щоб зберегти адресу.')
+        await ctx.send('❌ Адреса не знайдена! Використай `/колисвітло` щоб зберегти адресу.')
 
 @bot.command(name='видалитиадресу')
 async def delete_address(ctx):
@@ -619,7 +619,7 @@ async def delete_address(ctx):
 
 @tasks.loop(minutes=30)
 async def check_schedule_updates():
-    """Проверяет обновления графика для всех пользователей"""
+    """Перевіряє оновлення графіка для всіх користувачів"""
     try:
         users = get_all_users()
         print(f"🔄 Перевірка оновлень графіка для {len(users)} користувачів...")
@@ -650,18 +650,18 @@ async def check_schedule_updates():
                     embed.set_footer(text="Автоматичне сповіщення")
                     
                     await user_obj.send(embed=embed)
-                    print(f"✅ Уведомление отправлено пользователю {discord_id}")
+                    print(f"✅ Сповіщення надіслано користувачу {discord_id}")
                 except Exception as e:
-                    print(f"❌ Не удалось отправить уведомление пользователю {discord_id}: {e}")
+                    print(f"❌ Не вдалося надіслати сповіщення користувачу {discord_id}: {e}")
             
             await asyncio.sleep(5)
             
     except Exception as e:
-        print(f"❌ Ошибка при проверке обновлений: {e}")
+        print(f"❌ Помилка при перевірці оновлень: {e}")
 
 @tasks.loop(minutes=5)
 async def check_upcoming_outages():
-    """Уведомляет пользователей за 30 минут до отключения"""
+    """Сповіщає користувачів за 30 хвилин до відключення"""
     try:
         now = datetime.now()
         notification_time = now + timedelta(minutes=30)
@@ -699,28 +699,28 @@ async def check_upcoming_outages():
 
                     await user.send(embed=embed)
                     mark_notification_sent(notif['id'])
-                    print(f"✅ Предупреждение отправлено пользователю {discord_id}")
+                    print(f"✅ Попередження надіслано користувачу {discord_id}")
 
                 except Exception as e:
-                    print(f"❌ Не удалось отправить предупреждение пользователю {discord_id}: {e}")
+                    print(f"❌ Не вдалося надіслати попередження користувачу {discord_id}: {e}")
 
         deleted = delete_old_notifications(24)
         if deleted > 0:
-            print(f"🗑️ Удалено {deleted} старых уведомлений")
+            print(f"🗑️ Видалено {deleted} старих сповіщень")
 
     except Exception as e:
-        print(f"❌ Ошибка при проверке предстоящих отключений: {e}")
+        print(f"❌ Помилка при перевірці майбутніх відключень: {e}")
 
-@bot.command(name='help')
+@bot.command(name='довідка')
 async def help_command(ctx):
-    """Показує допомогу по командах"""
+    """Показує довідку по командах"""
     embed = discord.Embed(
         title="📋 Довідка по командах",
         description="Бот для перевірки графіків відключень електроенергії з автоматичними сповіщеннями",
         color=discord.Color.green()
     )
     embed.add_field(
-        name="/когдасвет *місто* *вулиця* *будинок*",
+        name="/колисвітло *місто* *вулиця* *будинок*",
         value="Перевіряє та зберігає адресу. При повторному виклику без параметрів використає збережену адресу.",
         inline=False
     )
@@ -739,15 +739,16 @@ async def help_command(ctx):
         value="• Сповіщення про зміни в графіку (кожні 30 хв)\n• Попередження за 30 хв до відключення\n• Всі сповіщення надходять в особисті повідомлення",
         inline=False
     )
+    embed.set_footer(text="Бот створений для допомоги під час блекаутів 🇺🇦")
     await ctx.send(embed=embed)
 
 def run_bot():
-    """Запуск Discord бота в отдельном потоке"""
+    """Запуск Discord бота в окремому потоці"""
     TOKEN = os.getenv('DISCORD_BOT_TOKEN')
     if TOKEN:
         bot.run(TOKEN)
     else:
-        print("❌ DISCORD_BOT_TOKEN не установлен!")
+        print("❌ DISCORD_BOT_TOKEN не встановлено!")
 
 def run_flask():
     """Запуск Flask сервера"""
@@ -755,9 +756,9 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
-    # Запускаем бота в отдельном потоке
+    # Запускаємо бота в окремому потоці
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     
-    # Запускаем Flask в основном потоке
+    # Запускаємо Flask в основному потоці
     run_flask()
