@@ -5,7 +5,7 @@ services:
     region: frankfurt
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python "Bot (4).py"
+    startCommand: python Bot.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.7
@@ -17,7 +17,6 @@ services:
         sync: false
       - key: FLASK_SECRET_KEY
         generateValue: true
-    
     # Установка Chromium через apt
     aptPackages:
       - chromium
