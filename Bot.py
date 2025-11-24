@@ -5,6 +5,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for
+from functools import wraps
 import asyncio
 import os
 from datetime import datetime, timedelta
@@ -12,6 +14,15 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 import re
+import threading
+import secrets
+
+# Настройка Flask
+app = Flask(__name__)
+app.secret_key = os.getenv('FLASK_SECRET_KEY', secrets.token_hex(32))
+
+# Пароль для доступа к сайту (установите через переменную окружения)
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'changeme123')
 
 # Настройка бота
 intents = discord.Intents.default()
@@ -58,9 +69,13 @@ def init_database():
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 discord_id BIGINT UNIQUE NOT NULL,
+                discord_username TEXT,
+                discord_avatar TEXT,
                 city TEXT NOT NULL,
                 street TEXT NOT NULL,
                 house_number TEXT NOT NULL,
+                latitude FLOAT,
+                longitude FLOAT,
                 last_schedule TEXT,
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW()
@@ -102,6 +117,23 @@ def init_database():
     finally:
         if conn:
             release_db_connection(conn)
+
+# Функция для геокодирования адреса
+def geocode_address(city, street, house_number):
+    """Получение координат по адресу"""
+    try:
+        from geopy.geocoders import Nominatim
+        geolocator = Nominatim(user_agent="power_outage_bot")
+        
+        address = f"{house_number} {street}, {city}, Ukraine"
+        location = geolocator.geocode(address, timeout=10)
+        
+        if location:
+            return location.latitude, location.longitude
+        return None, None
+    except Exception as e:
+        print(f"Ошибка геокодирования: {e}")
+        return None, None
 
 # Функция для получения графика отключений
 def get_outage_schedule(city, street, house_number):
@@ -173,7 +205,6 @@ def get_outage_schedule(city, street, house_number):
 def parse_outage_times(text):
     """Парсит время отключений из текста"""
     times = []
-    # Паттерны для поиска времени (например: "14:00-17:00", "з 14:00 до 17:00")
     patterns = [
         r'(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})',
         r'з\s*(\d{1,2}:\d{2})\s*до\s*(\d{1,2}:\d{2})',
@@ -188,11 +219,14 @@ def parse_outage_times(text):
     return times
 
 # Сохранение/обновление пользователя в БД
-def save_user_address(discord_id, city, street, house_number):
+def save_user_address(discord_id, city, street, house_number, username=None, avatar=None):
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+        
+        # Получаем координаты
+        lat, lon = geocode_address(city, street, house_number)
         
         # Проверка существования пользователя
         cur.execute("SELECT id FROM users WHERE discord_id = %s", (discord_id,))
@@ -202,15 +236,18 @@ def save_user_address(discord_id, city, street, house_number):
             # Обновление
             cur.execute("""
                 UPDATE users 
-                SET city = %s, street = %s, house_number = %s, updated_at = NOW()
+                SET city = %s, street = %s, house_number = %s, 
+                    latitude = %s, longitude = %s,
+                    discord_username = %s, discord_avatar = %s,
+                    updated_at = NOW()
                 WHERE discord_id = %s
-            """, (city, street, house_number, discord_id))
+            """, (city, street, house_number, lat, lon, username, avatar, discord_id))
         else:
             # Создание
             cur.execute("""
-                INSERT INTO users (discord_id, city, street, house_number)
-                VALUES (%s, %s, %s, %s)
-            """, (discord_id, city, street, house_number))
+                INSERT INTO users (discord_id, city, street, house_number, latitude, longitude, discord_username, discord_avatar)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (discord_id, city, street, house_number, lat, lon, username, avatar))
         
         conn.commit()
         cur.close()
@@ -391,9 +428,7 @@ def delete_user(discord_id):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Удаляем уведомления пользователя
         cur.execute("DELETE FROM outage_notifications WHERE discord_id = %s", (discord_id,))
-        # Удаляем пользователя
         cur.execute("DELETE FROM users WHERE discord_id = %s", (discord_id,))
         
         conn.commit()
@@ -408,6 +443,79 @@ def delete_user(discord_id):
         if conn:
             release_db_connection(conn)
 
+# Декоратор для защиты маршрутов
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('authenticated'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# Flask Routes
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Страница входа"""
+    if request.method == 'POST':
+        password = request.form.get('password')
+        if password == ADMIN_PASSWORD:
+            session['authenticated'] = True
+            return redirect(url_for('index'))
+        else:
+            return render_template('login.html', error='Неправильний пароль!')
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    """Выход"""
+    session.pop('authenticated', None)
+    return redirect(url_for('login'))
+
+@app.route('/')
+@login_required
+def index():
+    """Главная страница с картой"""
+    return render_template('index.html')
+
+@app.route('/api/users')
+@login_required
+def api_users():
+    """API для получения пользователей с координатами"""
+    users = get_all_users()
+    
+    # Фильтруем пользователей с координатами
+    users_with_coords = []
+    for user in users:
+        if user.get('latitude') and user.get('longitude'):
+            users_with_coords.append({
+                'id': user['id'],
+                'discord_id': user['discord_id'],
+                'username': user.get('discord_username', 'User'),
+                'avatar': user.get('discord_avatar', ''),
+                'city': user['city'],
+                'street': user['street'],
+                'house': user['house_number'],
+                'latitude': user['latitude'],
+                'longitude': user['longitude'],
+                'last_schedule': user.get('last_schedule', 'Немає даних')
+            })
+    
+    return jsonify(users_with_coords)
+
+@app.route('/api/stats')
+@login_required
+def api_stats():
+    """API для статистики"""
+    users = get_all_users()
+    notifications = get_pending_notifications()
+    
+    return jsonify({
+        'total_users': len(users),
+        'pending_notifications': len(notifications),
+        'users_with_coords': len([u for u in users if u.get('latitude') and u.get('longitude')])
+    })
+
+# Discord Bot Commands
 @bot.event
 async def on_ready():
     print(f'🤖 {bot.user} успішно запущений!')
@@ -419,14 +527,11 @@ async def on_ready():
 
 @bot.command(name='когдасвет')
 async def check_power(ctx, city: str = None, street: str = None, house: str = None):
-    """
-    Перевіряє графік відключень електроенергії
-    Використання: /когдасвет *місто* *вулиця* *номер_будинку*
-    Або просто: /когдасвет (використає збережену адресу)
-    """
+    """Перевіряє графік відключень електроенергії"""
     discord_id = ctx.author.id
+    username = str(ctx.author)
+    avatar = str(ctx.author.avatar.url) if ctx.author.avatar else None
     
-    # Если адрес не указан, проверяем сохраненный
     if not city or not street or not house:
         user_data = get_user_address(discord_id)
         if user_data:
@@ -438,23 +543,19 @@ async def check_power(ctx, city: str = None, street: str = None, house: str = No
             await ctx.send('❌ Адреса не знайдена! Вкажи адресу: `/когдасвет Київ Хрещатик 1`')
             return
     else:
-        # Сохраняем новый адрес
-        if save_user_address(discord_id, city, street, house):
+        if save_user_address(discord_id, city, street, house, username, avatar):
             await ctx.send(f'✅ Адресу збережено!')
     
     await ctx.send(f'🔍 Перевіряю графік відключень...\n⏳ Зачекайте...')
     
-    # Получение графика
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, get_outage_schedule, city, street, house)
     
     schedule = result['schedule']
     outage_times = result['outage_times']
     
-    # Сохранение графика
     update_user_schedule(discord_id, schedule)
     
-    # Сохранение времени отключений для уведомлений
     for time_str in outage_times:
         try:
             now = datetime.now()
@@ -468,7 +569,6 @@ async def check_power(ctx, city: str = None, street: str = None, house: str = No
         except:
             pass
     
-    # Отправка результата
     embed = discord.Embed(
         title="⚡ Графік відключень електроенергії",
         description=schedule,
@@ -504,162 +604,4 @@ async def delete_address(ctx):
         await ctx.send('✅ Адресу видалено!')
     else:
         await ctx.send('❌ Помилка при видаленні адреси')
-
-# Фоновая задача проверки обновлений графика (каждые 30 минут)
-@tasks.loop(minutes=30)
-async def check_schedule_updates():
-    """Проверяет обновления графика для всех пользователей"""
-    try:
-        users = get_all_users()
-        print(f"🔄 Перевірка оновлень графіка для {len(users)} користувачів...")
-        
-        for user in users:
-            discord_id = user['discord_id']
-            city = user['city']
-            street = user['street']
-            house = user['house_number']
-            old_schedule = user.get('last_schedule', '')
-            
-            # Получаем новый график
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, get_outage_schedule, city, street, house
-            )
-            new_schedule = result['schedule']
-            
-            # Если график изменился
-            if new_schedule != old_schedule and old_schedule:
-                update_user_schedule(discord_id, new_schedule)
-                
-                # Отправляем уведомление в ЛС
-                try:
-                    user_obj = await bot.fetch_user(discord_id)
-                    embed = discord.Embed(
-                        title="🔔 Графік відключень оновився!",
-                        description=new_schedule,
-                        color=discord.Color.orange()
-                    )
-                    embed.add_field(name="📍 Адреса", value=f"{city}, вул. {street}, буд. {house}", inline=False)
-                    embed.set_footer(text="Автоматичне сповіщення")
-                    
-                    await user_obj.send(embed=embed)
-                    print(f"✅ Уведомление отправлено пользователю {discord_id}")
-                except Exception as e:
-                    print(f"❌ Не удалось отправить уведомление пользователю {discord_id}: {e}")
-            
-            await asyncio.sleep(5)
-            
-    except Exception as e:
-        print(f"❌ Ошибка при проверке обновлений: {e}")
-
-# Фоновая задача проверки предстоящих отключений (каждые 5 минут)
-@tasks.loop(minutes=5)
-async def check_upcoming_outages():
-    """Уведомляет пользователей за 30 минут до отключения"""
-    try:
-        now = datetime.now()
-        notification_time = now + timedelta(minutes=30)
-        
-        notifications = get_pending_notifications()
-        print(f"⏰ Перевірка {len(notifications)} запланованих сповіщень...")
-        
-        for notif in notifications:
-            outage_time = notif['outage_time']
-            
-            # Если до отключения осталось менее 35 минут и более 25 минут
-            if now < outage_time <= notification_time:
-                discord_id = notif['discord_id']
-                
-                try:
-                    user = await bot.fetch_user(discord_id)
-                    user_data = get_user_address(discord_id)
-                    
-                    time_until = outage_time - now
-                    minutes = int(time_until.total_seconds() / 60)
-                    
-                    embed = discord.Embed(
-                        title="⚠️ Попередження про відключення!",
-                        description=f"Електроенергію буде відключено через **{minutes} хвилин**\n\n🕐 Час відключення: **{outage_time.strftime('%H:%M')}**",
-                        color=discord.Color.red()
-                    )
-                    
-                    if user_data:
-                        embed.add_field(
-                            name="📍 Адреса",
-                            value=f"{user_data['city']}, вул. {user_data['street']}, буд. {user_data['house_number']}",
-                            inline=False
-                        )
-                    
-                    embed.set_footer(text="Не забудь зарядити пристрої!")
-                    
-                    await user.send(embed=embed)
-                    mark_notification_sent(notif['id'])
-                    print(f"✅ Предупреждение отправлено пользователю {discord_id}")
-                    
-                except Exception as e:
-                    print(f"❌ Не удалось отправить предупреждение пользователю {discord_id}: {e}")
-        
-        # Удаляем старые уведомления
-        deleted = delete_old_notifications(24)
-        if deleted > 0:
-            print(f"🗑️ Удалено {deleted} старых уведомлений")
-        
-    except Exception as e:
-        print(f"❌ Ошибка при проверке предстоящих отключений: {e}")
-
-@bot.command(name='help')
-async def help_command(ctx):
-    """Показує допомогу по командах"""
-    embed = discord.Embed(
-        title="📋 Довідка по командах",
-        description="Бот для перевірки графіків відключень електроенергії з автоматичними сповіщеннями",
-        color=discord.Color.green()
-    )
-    embed.add_field(
-        name="/когдасвет *місто* *вулиця* *будинок*",
-        value="Перевіряє та зберігає адресу. При повторному виклику без параметрів використає збережену адресу.",
-        inline=False
-    )
-    embed.add_field(
-        name="/моядреса",
-        value="Показує твою збережену адресу",
-        inline=False
-    )
-    embed.add_field(
-        name="/видалитиадресу",
-        value="Видаляє збережену адресу та вимикає сповіщення",
-        inline=False
-    )
-    embed.add_field(
-        name="🔔 Автоматичні сповіщення",
-        value="• Сповіщення про зміни в графіку (кожні 30 хв)\n• Попередження за 30 хв до відключення\n• Всі сповіщення надходять в особисті повідомлення",
-        inline=False
-    )
-    await ctx.send(embed=embed)
-
-@bot.command(name='статистика')
-@commands.has_permissions(administrator=True)
-async def stats(ctx):
-    """Статистика бота (только для администраторов)"""
-    users = get_all_users()
-    notifications = get_pending_notifications()
-    
-    embed = discord.Embed(
-        title="📊 Статистика бота",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="👥 Користувачів", value=str(len(users)), inline=True)
-    embed.add_field(name="🔔 Заплановано сповіщень", value=str(len(notifications)), inline=True)
-    embed.add_field(name="🤖 Сервери", value=str(len(bot.guilds)), inline=True)
-    
-    await ctx.send(embed=embed)
-
-# Запуск бота
-if __name__ == '__main__':
-    TOKEN = os.getenv('DISCORD_BOT_TOKEN')
-    if not TOKEN:
-        print("❌ Ошибка: DISCORD_BOT_TOKEN не установлен!")
-    elif not DATABASE_URL:
-        print("❌ Ошибка: DATABASE_URL не установлен!")
-    else:
-        bot.run(TOKEN)
 
