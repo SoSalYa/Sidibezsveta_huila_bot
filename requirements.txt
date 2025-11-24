@@ -4,4 +4,3 @@ selenium==4.15.2
 psycopg2-binary==2.9.9
 geopy==2.4.1
 webdriver-manager==4.0.1
-py-cord==2.5.0
