@@ -1,5 +1,11 @@
 import os
+import sys
 os.environ["DISCORD_NO_AUDIO"] = "1"
+
+import types
+audioop = types.ModuleType("audioop")
+sys.modules["audioop"] = audioop
+
 import discord
 from discord.ext import commands, tasks
 from selenium import webdriver
@@ -18,12 +24,6 @@ import re
 import threading
 import secrets
 import time
-import sys
-if sys.version_info >= (3, 13):
-    # Создаем фейковый модуль audioop
-    import types
-    audioop = types.ModuleType('audioop')
-    sys.modules['audioop'] = audioop
 
 # Настройка Flask
 app = Flask(__name__)
