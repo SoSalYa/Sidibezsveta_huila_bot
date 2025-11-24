@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Вхід - Карта відключень</title>
+    <title>Вхід в панель</title>
     <style>
         * {
             margin: 0;
@@ -13,197 +13,172 @@
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
             display: flex;
-            align-items: center;
             justify-content: center;
-            padding: 20px;
+            align-items: center;
+            min-height: 100vh;
+            color: #e0e0e0;
         }
 
         .login-container {
-            background: white;
+            background: linear-gradient(135deg, #1e2a3a 0%, #2d3e50 100%);
+            padding: 50px;
             border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            padding: 50px 40px;
-            max-width: 400px;
+            box-shadow: 0 15px 50px rgba(0, 0, 0, 0.5);
             width: 100%;
-            animation: fadeIn 0.5s ease;
+            max-width: 450px;
+            border: 1px solid rgba(0, 212, 255, 0.2);
         }
 
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .login-header {
+        .login-container h1 {
             text-align: center;
-            margin-bottom: 40px;
-        }
-
-        .login-icon {
-            font-size: 4em;
-            margin-bottom: 20px;
-        }
-
-        h1 {
-            color: #667eea;
-            font-size: 2em;
+            color: #00d4ff;
             margin-bottom: 10px;
+            font-size: 32px;
+            text-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
         }
 
-        .subtitle {
-            color: #666;
-            font-size: 1em;
+        .login-container p {
+            text-align: center;
+            color: #b8b8b8;
+            margin-bottom: 30px;
+            font-size: 14px;
         }
 
         .form-group {
             margin-bottom: 25px;
         }
 
-        label {
+        .form-group label {
             display: block;
-            color: #333;
-            font-weight: 600;
-            margin-bottom: 10px;
-            font-size: 0.95em;
+            margin-bottom: 8px;
+            color: #00d4ff;
+            font-weight: bold;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
 
-        input[type="password"] {
+        .form-group input {
             width: 100%;
             padding: 15px;
-            border: 2px solid #e0e0e0;
+            border: 2px solid #2d3e50;
             border-radius: 10px;
-            font-size: 1em;
+            background: #16213e;
+            color: #e0e0e0;
+            font-size: 16px;
             transition: all 0.3s ease;
-            font-family: inherit;
         }
 
-        input[type="password"]:focus {
+        .form-group input:focus {
             outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: #00d4ff;
+            box-shadow: 0 0 20px rgba(0, 212, 255, 0.3);
         }
 
         .btn-login {
             width: 100%;
             padding: 15px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
             color: white;
             border: none;
             border-radius: 10px;
-            font-size: 1.1em;
-            font-weight: 600;
+            font-size: 18px;
+            font-weight: bold;
             cursor: pointer;
             transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 8px 25px rgba(0, 212, 255, 0.4);
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
 
         .btn-login:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+            transform: translateY(-3px);
+            box-shadow: 0 12px 35px rgba(0, 212, 255, 0.6);
         }
 
         .btn-login:active {
-            transform: translateY(0);
+            transform: translateY(-1px);
         }
 
         .error {
-            background: #ff4444;
+            background: linear-gradient(135deg, #e94560 0%, #c42847 100%);
             color: white;
             padding: 15px;
             border-radius: 10px;
-            margin-bottom: 25px;
+            margin-bottom: 20px;
             text-align: center;
-            animation: shake 0.5s ease;
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(233, 69, 96, 0.4);
+            animation: shake 0.5s;
         }
 
         @keyframes shake {
             0%, 100% { transform: translateX(0); }
-            10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
-            20%, 40%, 60%, 80% { transform: translateX(5px); }
+            25% { transform: translateX(-10px); }
+            75% { transform: translateX(10px); }
         }
 
-        .info-box {
-            background: #f8f9fa;
-            border-left: 4px solid #667eea;
-            padding: 15px;
-            border-radius: 8px;
-            margin-top: 25px;
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            color: #7a7a7a;
+            font-size: 13px;
         }
 
-        .info-box p {
-            color: #666;
-            font-size: 0.9em;
-            margin: 5px 0;
+        .footer a {
+            color: #00d4ff;
+            text-decoration: none;
+            transition: all 0.3s ease;
         }
 
-        .info-box strong {
-            color: #333;
+        .footer a:hover {
+            color: #e94560;
+            text-shadow: 0 0 10px rgba(233, 69, 96, 0.5);
         }
 
-        @media (max-width: 480px) {
-            .login-container {
-                padding: 40px 30px;
-            }
-
-            h1 {
-                font-size: 1.5em;
-            }
-
-            .login-icon {
-                font-size: 3em;
-            }
+        .icon {
+            text-align: center;
+            font-size: 64px;
+            margin-bottom: 20px;
+            filter: drop-shadow(0 0 20px rgba(0, 212, 255, 0.5));
         }
     </style>
 </head>
 <body>
     <div class="login-container">
-        <div class="login-header">
-            <div class="login-icon">🔐</div>
-            <h1>Адмін-панель</h1>
-            <p class="subtitle">Карта користувачів відключень</p>
-        </div>
-
+        <div class="icon">⚡</div>
+        <h1>Панель управління</h1>
+        <p>Введіть пароль для доступу</p>
+        
         {% if error %}
         <div class="error">
             ❌ {{ error }}
         </div>
         {% endif %}
-
-        <form method="POST" action="/login">
+        
+        <form method="POST">
             <div class="form-group">
-                <label for="password">Введіть пароль</label>
+                <label for="password">🔒 Пароль</label>
                 <input 
                     type="password" 
                     id="password" 
                     name="password" 
-                    placeholder="••••••••" 
-                    required 
+                    placeholder="Введіть пароль..."
+                    required
                     autofocus
                 >
             </div>
-
+            
             <button type="submit" class="btn-login">
-                🔓 Увійти
+                🚀 Увійти
             </button>
         </form>
-
-        <div class="info-box">
-            <p><strong>💡 Підказка:</strong></p>
-            <p>Пароль встановлюється через змінну середовища <code>ADMIN_PASSWORD</code></p>
+        
+        <div class="footer">
+            Бот зроблено завдяки <a href="https://discord.gg/WVVDYc6uts" target="_blank">вірі в пельмені 🥟</a>
         </div>
     </div>
-
-    <script>
-        // Фокус на поле пароля при загрузке
-        document.getElementById('password').focus();
-    </script>
 </body>
 </html>
