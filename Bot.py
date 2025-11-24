@@ -552,3 +552,114 @@ async def check_schedule_updates():
         print(f"❌ Ошибка при проверке обновлений: {e}")
 
 # Фоновая задача проверки предстоящих отключений (каждые 5 минут)
+@tasks.loop(minutes=5)
+async def check_upcoming_outages():
+    """Уведомляет пользователей за 30 минут до отключения"""
+    try:
+        now = datetime.now()
+        notification_time = now + timedelta(minutes=30)
+        
+        notifications = get_pending_notifications()
+        print(f"⏰ Перевірка {len(notifications)} запланованих сповіщень...")
+        
+        for notif in notifications:
+            outage_time = notif['outage_time']
+            
+            # Если до отключения осталось менее 35 минут и более 25 минут
+            if now < outage_time <= notification_time:
+                discord_id = notif['discord_id']
+                
+                try:
+                    user = await bot.fetch_user(discord_id)
+                    user_data = get_user_address(discord_id)
+                    
+                    time_until = outage_time - now
+                    minutes = int(time_until.total_seconds() / 60)
+                    
+                    embed = discord.Embed(
+                        title="⚠️ Попередження про відключення!",
+                        description=f"Електроенергію буде відключено через **{minutes} хвилин**\n\n🕐 Час відключення: **{outage_time.strftime('%H:%M')}**",
+                        color=discord.Color.red()
+                    )
+                    
+                    if user_data:
+                        embed.add_field(
+                            name="📍 Адреса",
+                            value=f"{user_data['city']}, вул. {user_data['street']}, буд. {user_data['house_number']}",
+                            inline=False
+                        )
+                    
+                    embed.set_footer(text="Не забудь зарядити пристрої!")
+                    
+                    await user.send(embed=embed)
+                    mark_notification_sent(notif['id'])
+                    print(f"✅ Предупреждение отправлено пользователю {discord_id}")
+                    
+                except Exception as e:
+                    print(f"❌ Не удалось отправить предупреждение пользователю {discord_id}: {e}")
+        
+        # Удаляем старые уведомления
+        deleted = delete_old_notifications(24)
+        if deleted > 0:
+            print(f"🗑️ Удалено {deleted} старых уведомлений")
+        
+    except Exception as e:
+        print(f"❌ Ошибка при проверке предстоящих отключений: {e}")
+
+@bot.command(name='help')
+async def help_command(ctx):
+    """Показує допомогу по командах"""
+    embed = discord.Embed(
+        title="📋 Довідка по командах",
+        description="Бот для перевірки графіків відключень електроенергії з автоматичними сповіщеннями",
+        color=discord.Color.green()
+    )
+    embed.add_field(
+        name="/когдасвет *місто* *вулиця* *будинок*",
+        value="Перевіряє та зберігає адресу. При повторному виклику без параметрів використає збережену адресу.",
+        inline=False
+    )
+    embed.add_field(
+        name="/моядреса",
+        value="Показує твою збережену адресу",
+        inline=False
+    )
+    embed.add_field(
+        name="/видалитиадресу",
+        value="Видаляє збережену адресу та вимикає сповіщення",
+        inline=False
+    )
+    embed.add_field(
+        name="🔔 Автоматичні сповіщення",
+        value="• Сповіщення про зміни в графіку (кожні 30 хв)\n• Попередження за 30 хв до відключення\n• Всі сповіщення надходять в особисті повідомлення",
+        inline=False
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name='статистика')
+@commands.has_permissions(administrator=True)
+async def stats(ctx):
+    """Статистика бота (только для администраторов)"""
+    users = get_all_users()
+    notifications = get_pending_notifications()
+    
+    embed = discord.Embed(
+        title="📊 Статистика бота",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="👥 Користувачів", value=str(len(users)), inline=True)
+    embed.add_field(name="🔔 Заплановано сповіщень", value=str(len(notifications)), inline=True)
+    embed.add_field(name="🤖 Сервери", value=str(len(bot.guilds)), inline=True)
+    
+    await ctx.send(embed=embed)
+
+# Запуск бота
+if __name__ == '__main__':
+    TOKEN = os.getenv('DISCORD_BOT_TOKEN')
+    if not TOKEN:
+        print("❌ Ошибка: DISCORD_BOT_TOKEN не установлен!")
+    elif not DATABASE_URL:
+        print("❌ Ошибка: DATABASE_URL не установлен!")
+    else:
+        bot.run(TOKEN)
+
