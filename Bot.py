@@ -7,12 +7,14 @@ audioop = types.ModuleType("audioop")
 sys.modules["audioop"] = audioop
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.keys import Keys
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from functools import wraps
 import asyncio
@@ -143,7 +145,7 @@ def geocode_address(city, street, house_number):
         print(f"Помилка геокодування: {e}")
         return None, None
 
-# Функція для отримання графіка відключень
+# ПОКРАЩЕНА функція для отримання графіка відключень
 def get_outage_schedule(city, street, house_number):
     driver = None
     try:
@@ -153,64 +155,204 @@ def get_outage_schedule(city, street, house_number):
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        chrome_options.add_argument('--window-size=1920,1080')
         
         # Для Render.com - вказуємо шлях до chromium
         chrome_options.binary_location = '/usr/bin/chromium'
         
         driver = webdriver.Chrome(options=chrome_options)
+        driver.set_page_load_timeout(30)
+        
+        print(f"🔍 Відкриваю сайт ДТЕК...")
         driver.get('https://www.dtek-oem.com.ua/ua/shutdowns')
         
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 20)
         
-        # Заповнення форми
-        city_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder*="населений пункт"], input[name="city"]')))
-        city_input.clear()
-        city_input.send_keys(city)
-        time.sleep(2)
+        # Чекаємо поки сторінка повністю завантажиться
+        time.sleep(3)
         
-        street_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder*="вулиця"], input[name="street"]')))
-        street_input.clear()
-        street_input.send_keys(street)
-        time.sleep(2)
+        print(f"📝 Заповнюю форму: {city}, {street}, {house_number}")
         
-        house_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder*="будинок"], input[name="house"]')))
-        house_input.clear()
-        house_input.send_keys(house_number)
-        time.sleep(2)
+        # Заповнення поля міста з автозаповненням
+        try:
+            city_input = wait.until(EC.presence_of_element_located((
+                By.CSS_SELECTOR, 
+                'input[placeholder*="населений пункт"], input[placeholder*="Населений пункт"], input[name="city"], #city'
+            )))
+            city_input.clear()
+            city_input.send_keys(city)
+            time.sleep(2)
+            
+            # Чекаємо на автозаповнення і вибираємо перший варіант
+            try:
+                city_suggestion = wait.until(EC.element_to_be_clickable((
+                    By.CSS_SELECTOR, 
+                    '.suggestions li:first-child, .autocomplete-item:first-child, .dropdown-item:first-child'
+                )))
+                city_suggestion.click()
+                time.sleep(1)
+            except:
+                city_input.send_keys(Keys.ARROW_DOWN)
+                city_input.send_keys(Keys.ENTER)
+                time.sleep(1)
+        except Exception as e:
+            print(f"⚠️ Помилка заповнення міста: {e}")
         
-        search_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"], button:contains("Пошук")')))
-        search_button.click()
+        # Заповнення поля вулиці з автозаповненням
+        try:
+            street_input = wait.until(EC.presence_of_element_located((
+                By.CSS_SELECTOR, 
+                'input[placeholder*="вулиця"], input[placeholder*="Вулиця"], input[name="street"], #street'
+            )))
+            street_input.clear()
+            street_input.send_keys(street)
+            time.sleep(2)
+            
+            # Чекаємо на автозаповнення і вибираємо перший варіант
+            try:
+                street_suggestion = wait.until(EC.element_to_be_clickable((
+                    By.CSS_SELECTOR, 
+                    '.suggestions li:first-child, .autocomplete-item:first-child, .dropdown-item:first-child'
+                )))
+                street_suggestion.click()
+                time.sleep(1)
+            except:
+                street_input.send_keys(Keys.ARROW_DOWN)
+                street_input.send_keys(Keys.ENTER)
+                time.sleep(1)
+        except Exception as e:
+            print(f"⚠️ Помилка заповнення вулиці: {e}")
         
+        # Заповнення поля будинку з автозаповненням
+        try:
+            house_input = wait.until(EC.presence_of_element_located((
+                By.CSS_SELECTOR, 
+                'input[placeholder*="будинок"], input[placeholder*="Будинок"], input[name="house"], #house'
+            )))
+            house_input.clear()
+            house_input.send_keys(house_number)
+            time.sleep(2)
+            
+            # Чекаємо на автозаповнення і вибираємо перший варіант
+            try:
+                house_suggestion = wait.until(EC.element_to_be_clickable((
+                    By.CSS_SELECTOR, 
+                    '.suggestions li:first-child, .autocomplete-item:first-child, .dropdown-item:first-child'
+                )))
+                house_suggestion.click()
+                time.sleep(1)
+            except:
+                house_input.send_keys(Keys.ARROW_DOWN)
+                house_input.send_keys(Keys.ENTER)
+                time.sleep(1)
+        except Exception as e:
+            print(f"⚠️ Помилка заповнення будинку: {e}")
+        
+        # Натискаємо кнопку пошуку
+        try:
+            search_button = wait.until(EC.element_to_be_clickable((
+                By.CSS_SELECTOR, 
+                'button[type="submit"], button.search-btn, button:contains("Пошук"), .search-button'
+            )))
+            driver.execute_script("arguments[0].scrollIntoView(true);", search_button)
+            time.sleep(1)
+            search_button.click()
+            print("🔍 Натиснуто кнопку пошуку")
+        except Exception as e:
+            print(f"⚠️ Помилка натискання кнопки: {e}")
+            # Спроба натиснути через JavaScript
+            try:
+                driver.execute_script("document.querySelector('button[type=\"submit\"]').click()")
+            except:
+                pass
+        
+        # Чекаємо на результати
         time.sleep(5)
         
-        schedule_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '.schedule, .outage-schedule, .result')))
-        schedule_text = schedule_element.text
-        
-        # Отримання детальної інформації та часу відключень
+        # Пробуємо знайти графік різними способами
+        schedule_text = ""
         outage_times = []
+        
+        # Спосіб 1: Основний контейнер з графіком
         try:
-            details = driver.find_elements(By.CSS_SELECTOR, '.schedule-item, .outage-info, .time-slot')
-            if details:
-                schedule_text += "\n\nДетальна інформація:\n"
-                for detail in details:
-                    text = detail.text
-                    schedule_text += text + "\n"
-                    outage_times.extend(parse_outage_times(text))
-        except:
-            pass
+            schedule_elements = driver.find_elements(By.CSS_SELECTOR, 
+                '.schedule-container, .outage-schedule, .result, .schedule-info, .schedule-block, [class*="schedule"]'
+            )
+            
+            if schedule_elements:
+                for elem in schedule_elements:
+                    text = elem.text.strip()
+                    if text and len(text) > 20:
+                        schedule_text += text + "\n"
+                        print(f"✅ Знайдено графік (спосіб 1): {text[:100]}...")
+        except Exception as e:
+            print(f"⚠️ Спосіб 1 не спрацював: {e}")
+        
+        # Спосіб 2: Таблиця з графіком
+        try:
+            tables = driver.find_elements(By.CSS_SELECTOR, 'table, .table, [class*="table"]')
+            for table in tables:
+                text = table.text.strip()
+                if text and len(text) > 20:
+                    schedule_text += "\n" + text + "\n"
+                    print(f"✅ Знайдено таблицю: {text[:100]}...")
+        except Exception as e:
+            print(f"⚠️ Спосіб 2 не спрацював: {e}")
+        
+        # Спосіб 3: Окремі елементи з часом
+        try:
+            time_elements = driver.find_elements(By.CSS_SELECTOR, 
+                '.time-slot, .outage-time, .schedule-item, [class*="time"], [class*="slot"]'
+            )
+            
+            if time_elements:
+                schedule_text += "\n📅 Деталізований графік:\n"
+                for elem in time_elements:
+                    text = elem.text.strip()
+                    if text:
+                        schedule_text += f"• {text}\n"
+                        outage_times.extend(parse_outage_times(text))
+                        print(f"✅ Знайдено час: {text}")
+        except Exception as e:
+            print(f"⚠️ Спосіб 3 не спрацював: {e}")
+        
+        # Спосіб 4: Шукаємо будь-який текст з часом
+        try:
+            body_text = driver.find_element(By.TAG_NAME, 'body').text
+            time_patterns = re.findall(r'\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}', body_text)
+            
+            if time_patterns and not schedule_text:
+                schedule_text = "📋 Знайдені часи відключень:\n"
+                for pattern in time_patterns:
+                    schedule_text += f"• {pattern}\n"
+                    outage_times.extend(parse_outage_times(pattern))
+                    print(f"✅ Знайдено час з body: {pattern}")
+        except Exception as e:
+            print(f"⚠️ Спосіб 4 не спрацював: {e}")
+        
+        # Парсимо всі знайдені часи
+        all_times = parse_outage_times(schedule_text)
+        outage_times.extend(all_times)
+        outage_times = list(set(outage_times))  # Видаляємо дублікати
         
         driver.quit()
+        
+        if not schedule_text or len(schedule_text) < 20:
+            schedule_text = "⚠️ Графік відключень не знайдено або адреса не обслуговується ДТЕК.\nПеревір правильність адреси або спробуй пізніше."
+        
         return {
-            'schedule': schedule_text if schedule_text else "Графік відключень не знайдено",
+            'schedule': schedule_text.strip(),
             'outage_times': outage_times
         }
         
     except Exception as e:
         if driver:
             driver.quit()
+        error_msg = f"❌ Помилка при отриманні даних: {str(e)}\n\nМожливі причини:\n• Сайт ДТЕК тимчасово недоступний\n• Невірна адреса\n• Адреса не обслуговується ДТЕК"
+        print(error_msg)
         return {
-            'schedule': f"Помилка при отриманні даних: {str(e)}",
+            'schedule': error_msg,
             'outage_times': []
         }
 
@@ -218,17 +360,20 @@ def parse_outage_times(text):
     """Парсить час відключень з тексту"""
     times = []
     patterns = [
-        r'(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})',
-        r'з\s*(\d{1,2}:\d{2})\s*до\s*(\d{1,2}:\d{2})',
+        r'(\d{1,2}:\d{2})\s*[-–]\s*\d{1,2}:\d{2}',  # 10:00-12:00
+        r'з\s*(\d{1,2}:\d{2})\s*до\s*\d{1,2}:\d{2}',  # з 10:00 до 12:00
+        r'о\s*(\d{1,2}:\d{2})',  # о 10:00
     ]
     
     for pattern in patterns:
         matches = re.findall(pattern, text)
         for match in matches:
-            start_time = match[0]
-            times.append(start_time)
+            if isinstance(match, tuple):
+                times.append(match[0])
+            else:
+                times.append(match)
     
-    return times
+    return list(set(times))  # Видаляємо дублікати
 
 # Збереження/оновлення користувача в БД
 def save_user_address(discord_id, city, street, house_number, username=None, avatar=None):
@@ -533,10 +678,141 @@ async def on_ready():
     print(f'🤖 {bot.user} успішно запущено!')
     init_db_pool()
     init_database()
+    
+    # Синхронізуємо slash команди
+    try:
+        synced = await bot.tree.sync()
+        print(f'✅ Синхронізовано {len(synced)} slash команд')
+    except Exception as e:
+        print(f'❌ Помилка синхронізації команд: {e}')
+    
     check_schedule_updates.start()
     check_upcoming_outages.start()
     print('✅ Бот готовий до роботи')
 
+# Slash команда для перевірки світла
+@bot.tree.command(name="колисвітло", description="Перевірка графіка відключень електроенергії")
+@app_commands.describe(
+    city="Місто (наприклад: Київ)",
+    street="Вулиця (наприклад: Хрещатик)",
+    house="Номер будинку (наприклад: 1)"
+)
+async def slash_check_power(interaction: discord.Interaction, city: str = None, street: str = None, house: str = None):
+    """Slash команда для перевірки світла"""
+    await interaction.response.defer()
+    
+    discord_id = interaction.user.id
+    username = str(interaction.user)
+    avatar = str(interaction.user.avatar.url) if interaction.user.avatar else None
+    
+    if not city or not street or not house:
+        user_data = get_user_address(discord_id)
+        if user_data:
+            city = user_data['city']
+            street = user_data['street']
+            house = user_data['house_number']
+            await interaction.followup.send(f'📍 Використовую збережену адресу: {city}, вул. {street}, буд. {house}')
+        else:
+            await interaction.followup.send('❌ Адреса не знайдена! Вкажи адресу через параметри команди.')
+            return
+    else:
+        if save_user_address(discord_id, city, street, house, username, avatar):
+            await interaction.followup.send(f'✅ Адресу збережено!')
+    
+    await interaction.followup.send(f'🔍 Перевіряю графік відключень...\n⏳ Зачекай трохи...')
+    
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, get_outage_schedule, city, street, house)
+    
+    schedule = result['schedule']
+    outage_times = result['outage_times']
+    
+    update_user_schedule(discord_id, schedule)
+    
+    for time_str in outage_times:
+        try:
+            now = datetime.now()
+            hour, minute = map(int, time_str.split(':'))
+            outage_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            
+            if outage_time < now:
+                outage_time += timedelta(days=1)
+            
+            save_outage_notification(discord_id, outage_time)
+        except:
+            pass
+    
+    embed = discord.Embed(
+        title="⚡ Графік відключень електроенергії",
+        description=schedule,
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="📍 Адреса", value=f"{city}, вул. {street}, буд. {house}", inline=False)
+    embed.set_footer(text="Дані з сайту ДТЕК • Автоматична перевірка активна")
+    
+    await interaction.followup.send(embed=embed)
+
+# Slash команда для перегляду адреси
+@bot.tree.command(name="моядреса", description="Показати збережену адресу")
+async def slash_my_address(interaction: discord.Interaction):
+    """Показує збережену адресу"""
+    user_data = get_user_address(interaction.user.id)
+    
+    if user_data:
+        embed = discord.Embed(
+            title="📍 Твоя збережена адреса",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Місто", value=user_data['city'], inline=True)
+        embed.add_field(name="Вулиця", value=user_data['street'], inline=True)
+        embed.add_field(name="Будинок", value=user_data['house_number'], inline=True)
+        embed.set_footer(text=f"Оновлено: {user_data['updated_at']}")
+        await interaction.response.send_message(embed=embed)
+    else:
+        await interaction.response.send_message('❌ Адреса не знайдена! Використай `/колисвітло` щоб зберегти адресу.')
+
+# Slash команда для видалення адреси
+@bot.tree.command(name="видалитиадресу", description="Видалити збережену адресу")
+async def slash_delete_address(interaction: discord.Interaction):
+    """Видаляє збережену адресу"""
+    if delete_user(interaction.user.id):
+        await interaction.response.send_message('✅ Адресу видалено!')
+    else:
+        await interaction.response.send_message('❌ Помилка при видаленні адреси')
+
+# Slash команда для довідки
+@bot.tree.command(name="довідка", description="Показати список команд")
+async def slash_help(interaction: discord.Interaction):
+    """Показує довідку по командах"""
+    embed = discord.Embed(
+        title="📋 Довідка по командах",
+        description="Бот для перевірки графіків відключень електроенергії з автоматичними сповіщеннями",
+        color=discord.Color.green()
+    )
+    embed.add_field(
+        name="/колисвітло",
+        value="Перевіряє та зберігає адресу. Параметри: місто, вулиця, будинок. При повторному виклику без параметрів використає збережену адресу.",
+        inline=False
+    )
+    embed.add_field(
+        name="/моядреса",
+        value="Показує твою збережену адресу",
+        inline=False
+    )
+    embed.add_field(
+        name="/видалитиадресу",
+        value="Видаляє збережену адресу та вимикає сповіщення",
+        inline=False
+    )
+    embed.add_field(
+        name="🔔 Автоматичні сповіщення",
+        value="• Сповіщення про зміни в графіку (кожні 30 хв)\n• Попередження за 30 хв до відключення\n• Всі сповіщення надходять в особисті повідомлення",
+        inline=False
+    )
+    embed.set_footer(text="Бот зроблено завдяки вірі в пельмені 🥟")
+    await interaction.response.send_message(embed=embed)
+
+# Старі text команди (залишаємо для сумісності)
 @bot.command(
     name='колисвітло',
     help='Перевіряє графік відключень електроенергії',
@@ -557,7 +833,7 @@ async def check_power(ctx, city: str = None, street: str = None, house: str = No
             house = user_data['house_number']
             await ctx.send(f'📍 Використовую збережену адресу: {city}, вул. {street}, буд. {house}')
         else:
-            await ctx.send('❌ Адреса не знайдена! Вкажи адресу: `/колисвітло Київ Хрещатик 1`')
+            await ctx.send('❌ Адреса не знайдена! Вкажи адресу: `/колисвітло Київ Хрещатик 1` або використай slash команду')
             return
     else:
         if save_user_address(discord_id, city, street, house, username, avatar):
@@ -736,12 +1012,12 @@ async def help_command(ctx):
     """Показує довідку по командах"""
     embed = discord.Embed(
         title="📋 Довідка по командах",
-        description="Бот для перевірки графіків відключень електроенергії з автоматичними сповіщеннями",
+        description="Бот для перевірки графіків відключень електроенергії з автоматичними сповіщеннями\n\n💡 **Підказка:** Тепер можна використовувати slash команди! Просто напиши `/` і вибери команду зі списку.",
         color=discord.Color.green()
     )
     embed.add_field(
-        name="/колисвітло *місто* *вулиця* *будинок*",
-        value="Перевіряє та зберігає адресу. При повторному виклику без параметрів використає збережену адресу.",
+        name="/колисвітло [місто] [вулиця] [будинок]",
+        value="Перевіряє та зберігає адресу. При повторному виклику без параметрів використає збережену адресу.\n**Приклад:** `/колисвітло Київ Хрещатик 1`",
         inline=False
     )
     embed.add_field(
@@ -755,8 +1031,18 @@ async def help_command(ctx):
         inline=False
     )
     embed.add_field(
+        name="/довідка",
+        value="Показує цю довідку",
+        inline=False
+    )
+    embed.add_field(
         name="🔔 Автоматичні сповіщення",
         value="• Сповіщення про зміни в графіку (кожні 30 хв)\n• Попередження за 30 хв до відключення\n• Всі сповіщення надходять в особисті повідомлення",
+        inline=False
+    )
+    embed.add_field(
+        name="✨ Нові можливості",
+        value="• **Автозаповнення адрес** - бот автоматично підказує адреси з сайту ДТЕК\n• **Slash команди** - зручніший спосіб використання команд\n• **Покращений парсинг графіків** - більш точне визначення часу відключень",
         inline=False
     )
     embed.set_footer(text="Бот зроблено завдяки вірі в пельмені 🥟")
