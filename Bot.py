@@ -17,6 +17,12 @@ import re
 import threading
 import secrets
 import time
+import sys
+if sys.version_info >= (3, 13):
+    # Создаем фейковый модуль audioop
+    import types
+    audioop = types.ModuleType('audioop')
+    sys.modules['audioop'] = audioop
 
 # Настройка Flask
 app = Flask(__name__)
