@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Карта користувачів - Графік відключень</title>
+    <title>Панель управління ботом</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         * {
@@ -14,227 +14,185 @@
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
             min-height: 100vh;
         }
 
         .header {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            padding: 20px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-        }
-
-        .header-content {
-            max-width: 1400px;
-            margin: 0 auto;
+            background: linear-gradient(135deg, #0f3460 0%, #16213e 100%);
+            padding: 20px 40px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
-            gap: 20px;
+            border-bottom: 2px solid #e94560;
         }
 
-        h1 {
-            color: #667eea;
-            font-size: 2em;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+        .header h1 {
+            color: #00d4ff;
+            font-size: 28px;
+            text-shadow: 0 0 20px rgba(0, 212, 255, 0.5);
         }
 
-        .header-right {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-            flex-wrap: wrap;
+        .header .logout-btn {
+            background: linear-gradient(135deg, #e94560 0%, #c42847 100%);
+            color: white;
+            border: none;
+            padding: 10px 25px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(233, 69, 96, 0.4);
+        }
+
+        .header .logout-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(233, 69, 96, 0.6);
         }
 
         .stats {
-            display: flex;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 20px;
-            flex-wrap: wrap;
+            padding: 30px 40px;
         }
 
-        .stat-item {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 10px 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 12px;
-            color: white;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
-        }
-
-        .stat-number {
-            font-size: 2em;
-            font-weight: bold;
-        }
-
-        .stat-label {
-            font-size: 0.9em;
-            opacity: 0.9;
-        }
-
-        .btn-logout {
-            padding: 12px 24px;
-            background: #ff4444;
-            color: white;
-            border: none;
-            border-radius: 10px;
-            font-size: 1em;
-            font-weight: 600;
-            cursor: pointer;
+        .stat-card {
+            background: linear-gradient(135deg, #1e2a3a 0%, #2d3e50 100%);
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
+            border-left: 4px solid #00d4ff;
             transition: all 0.3s ease;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            box-shadow: 0 4px 15px rgba(255, 68, 68, 0.3);
         }
 
-        .btn-logout:hover {
-            background: #cc0000;
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(255, 68, 68, 0.4);
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 35px rgba(0, 212, 255, 0.3);
         }
 
-        .container {
-            max-width: 1400px;
-            margin: 30px auto;
-            padding: 0 20px;
+        .stat-card h3 {
+            color: #00d4ff;
+            font-size: 16px;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .stat-card .value {
+            color: #ffffff;
+            font-size: 36px;
+            font-weight: bold;
+            text-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+        }
+
+        .map-container {
+            margin: 20px 40px;
+            background: #1e2a3a;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
+        }
+
+        .map-container h2 {
+            color: #00d4ff;
+            margin-bottom: 20px;
+            font-size: 24px;
+            text-shadow: 0 0 15px rgba(0, 212, 255, 0.4);
         }
 
         #map {
-            width: 100%;
-            height: 70vh;
-            min-height: 500px;
-            border-radius: 16px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            border: 3px solid white;
+            height: 600px;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            filter: brightness(0.9) contrast(1.1);
         }
 
-        .custom-marker {
-            background: white;
-            border: 3px solid #667eea;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-            position: relative;
+        .users-list {
+            margin: 20px 40px;
+            background: #1e2a3a;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
         }
 
-        .custom-marker img {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            object-fit: cover;
+        .users-list h2 {
+            color: #00d4ff;
+            margin-bottom: 20px;
+            font-size: 24px;
+            text-shadow: 0 0 15px rgba(0, 212, 255, 0.4);
         }
 
-        .custom-marker::before {
-            content: '';
-            position: absolute;
-            bottom: -15px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 0;
-            height: 0;
-            border-left: 10px solid transparent;
-            border-right: 10px solid transparent;
-            border-top: 15px solid #667eea;
-        }
-
-        .leaflet-popup-content-wrapper {
-            border-radius: 12px;
-            padding: 0;
-            overflow: hidden;
-        }
-
-        .popup-content {
-            padding: 15px;
-            min-width: 250px;
-        }
-
-        .popup-header {
-            display: flex;
-            align-items: center;
-            gap: 12px;
+        .user-card {
+            background: linear-gradient(135deg, #2d3e50 0%, #1e2a3a 100%);
+            padding: 20px;
             margin-bottom: 15px;
-            padding-bottom: 15px;
-            border-bottom: 2px solid #f0f0f0;
+            border-radius: 10px;
+            border-left: 3px solid #e94560;
+            transition: all 0.3s ease;
         }
 
-        .popup-avatar {
+        .user-card:hover {
+            transform: translateX(5px);
+            box-shadow: 0 4px 20px rgba(233, 69, 96, 0.3);
+        }
+
+        .user-card .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 10px;
+        }
+
+        .user-card .user-avatar {
             width: 50px;
             height: 50px;
             border-radius: 50%;
-            border: 3px solid #667eea;
+            border: 2px solid #00d4ff;
+            box-shadow: 0 0 15px rgba(0, 212, 255, 0.5);
         }
 
-        .popup-username {
-            font-size: 1.2em;
+        .user-card .username {
+            color: #00d4ff;
             font-weight: bold;
-            color: #667eea;
+            font-size: 18px;
         }
 
-        .popup-info {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
+        .user-card .address {
+            color: #b8b8b8;
+            margin: 8px 0;
+            font-size: 14px;
         }
 
-        .popup-row {
-            display: flex;
-            gap: 8px;
-            font-size: 0.95em;
-        }
-
-        .popup-label {
-            font-weight: 600;
-            color: #666;
-        }
-
-        .popup-value {
-            color: #333;
-        }
-
-        .popup-schedule {
-            margin-top: 12px;
+        .user-card .schedule {
+            color: #e0e0e0;
+            background: #16213e;
             padding: 12px;
-            background: #f8f9fa;
             border-radius: 8px;
-            font-size: 0.9em;
-            max-height: 150px;
-            overflow-y: auto;
+            margin-top: 10px;
+            white-space: pre-wrap;
+            font-size: 13px;
+            border-left: 2px solid #e94560;
         }
 
         .loading {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            padding: 30px;
-            border-radius: 16px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
-            z-index: 9999;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 15px;
+            text-align: center;
+            padding: 40px;
+            color: #00d4ff;
+            font-size: 18px;
         }
 
         .spinner {
-            width: 50px;
-            height: 50px;
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #667eea;
+            border: 4px solid rgba(0, 212, 255, 0.1);
+            border-top: 4px solid #00d4ff;
             border-radius: 50%;
+            width: 40px;
+            height: 40px;
             animation: spin 1s linear infinite;
+            margin: 20px auto;
         }
 
         @keyframes spin {
@@ -242,255 +200,173 @@
             100% { transform: rotate(360deg); }
         }
 
-        .no-users {
+        .footer {
             text-align: center;
-            padding: 50px;
-            background: white;
-            border-radius: 16px;
-            margin-top: 30px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            padding: 30px;
+            color: #7a7a7a;
+            font-size: 14px;
+            margin-top: 40px;
         }
 
-        .no-users h2 {
-            color: #667eea;
-            margin-bottom: 15px;
+        .footer a {
+            color: #00d4ff;
+            text-decoration: none;
+            transition: all 0.3s ease;
         }
 
-        .no-users p {
-            color: #666;
-            font-size: 1.1em;
+        .footer a:hover {
+            color: #e94560;
+            text-shadow: 0 0 10px rgba(233, 69, 96, 0.5);
         }
 
-        .admin-badge {
-            display: inline-block;
-            padding: 6px 12px;
-            background: #4CAF50;
-            color: white;
-            border-radius: 20px;
-            font-size: 0.9em;
-            font-weight: 600;
+        /* Темна тема для Leaflet попапів */
+        .leaflet-popup-content-wrapper {
+            background: #1e2a3a;
+            color: #e0e0e0;
+            border-radius: 10px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.5);
         }
 
-        @media (max-width: 768px) {
-            h1 {
-                font-size: 1.5em;
-            }
+        .leaflet-popup-tip {
+            background: #1e2a3a;
+        }
 
-            .header-content {
-                flex-direction: column;
-            }
+        .leaflet-popup-content h3 {
+            color: #00d4ff;
+            margin-bottom: 10px;
+        }
 
-            .header-right {
-                width: 100%;
-                justify-content: space-between;
-            }
-
-            .stat-item {
-                padding: 8px 15px;
-                flex: 1;
-            }
-
-            .stat-number {
-                font-size: 1.5em;
-            }
-
-            #map {
-                height: 60vh;
-            }
+        .leaflet-popup-content p {
+            color: #b8b8b8;
+            margin: 5px 0;
         }
     </style>
 </head>
 <body>
-    <div class="loading" id="loading">
-        <div class="spinner"></div>
-        <div>Завантаження карти...</div>
-    </div>
-
     <div class="header">
-        <div class="header-content">
-            <div>
-                <h1>
-                    <span>⚡</span>
-                    Адмін-панель
-                    <span class="admin-badge">🔒 Захищено</span>
-                </h1>
-            </div>
-            <div class="header-right">
-                <div class="stats" id="stats">
-                    <div class="stat-item">
-                        <div class="stat-number" id="totalUsers">0</div>
-                        <div class="stat-label">Користувачів</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-number" id="pendingNotifications">0</div>
-                        <div class="stat-label">Сповіщень</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-number" id="usersWithCoords">0</div>
-                        <div class="stat-label">На карті</div>
-                    </div>
-                </div>
-                <a href="/logout" class="btn-logout">
-                    <span>🚪</span>
-                    Вийти
-                </a>
+        <h1>⚡ Панель управління ботом</h1>
+        <a href="/logout"><button class="logout-btn">🚪 Вийти</button></a>
+    </div>
+
+    <div class="stats" id="stats">
+        <div class="loading">
+            <div class="spinner"></div>
+            Завантаження статистики...
+        </div>
+    </div>
+
+    <div class="map-container">
+        <h2>🗺️ Карта користувачів</h2>
+        <div id="map"></div>
+    </div>
+
+    <div class="users-list">
+        <h2>👥 Список користувачів</h2>
+        <div id="users">
+            <div class="loading">
+                <div class="spinner"></div>
+                Завантаження користувачів...
             </div>
         </div>
     </div>
 
-    <div class="container">
-        <div id="map"></div>
-        <div class="no-users" id="noUsers" style="display: none;">
-            <h2>🗺️ Поки що немає користувачів на карті</h2>
-            <p>Користувачі з'являться тут після використання команди /когдасвет у Discord</p>
-        </div>
+    <div class="footer">
+        Бот зроблено завдяки <a href="https://discord.gg/WVVDYc6uts" target="_blank">вірі в пельмені 🥟</a>
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        let map;
-        let markers = [];
+        // Ініціалізація карти з темною темою
+        const map = L.map('map').setView([50.4501, 30.5234], 6);
 
-        // Инициализация карты
-        function initMap() {
-            map = L.map('map', {
-                center: [49.0, 31.0],
-                zoom: 6,
-                minZoom: 5,
-                maxZoom: 18
-            });
+        // Використовуємо темну тему для карти
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd',
+            maxZoom: 20
+        }).addTo(map);
 
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '© OpenStreetMap contributors',
-                maxZoom: 19
-            }).addTo(map);
-        }
-
-        // Создание кастомной иконки
-        function createCustomIcon(avatarUrl) {
-            const iconHtml = `
-                <div class="custom-marker">
-                    <img src="${avatarUrl || 'https://cdn.discordapp.com/embed/avatars/0.png'}" 
-                         onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
-                </div>
-            `;
-
-            return L.divIcon({
-                html: iconHtml,
-                className: '',
-                iconSize: [50, 65],
-                iconAnchor: [25, 65],
-                popupAnchor: [0, -65]
-            });
-        }
-
-        // Создание контента попапа
-        function createPopupContent(user) {
-            const schedule = user.last_schedule || 'Немає даних';
-            const shortSchedule = schedule.length > 300 ? schedule.substring(0, 300) + '...' : schedule;
-
-            return `
-                <div class="popup-content">
-                    <div class="popup-header">
-                        <img src="${user.avatar || 'https://cdn.discordapp.com/embed/avatars/0.png'}" 
-                             class="popup-avatar"
-                             onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
-                        <div class="popup-username">${user.username}</div>
-                    </div>
-                    <div class="popup-info">
-                        <div class="popup-row">
-                            <span class="popup-label">🏙️ Місто:</span>
-                            <span class="popup-value">${user.city}</span>
-                        </div>
-                        <div class="popup-row">
-                            <span class="popup-label">🏠 Адреса:</span>
-                            <span class="popup-value">вул. ${user.street}, ${user.house}</span>
-                        </div>
-                        <div class="popup-row">
-                            <span class="popup-label">👤 Discord ID:</span>
-                            <span class="popup-value">${user.discord_id}</span>
-                        </div>
-                    </div>
-                    <div class="popup-schedule">
-                        <strong>📅 Графік відключень:</strong><br>
-                        ${shortSchedule}
-                    </div>
-                </div>
-            `;
-        }
-
-        // Загрузка пользователей
-        async function loadUsers() {
-            try {
-                const response = await fetch('/api/users');
-                const users = await response.json();
-
-                // Очистка старых маркеров
-                markers.forEach(marker => map.removeLayer(marker));
-                markers = [];
-
-                if (users.length === 0) {
-                    document.getElementById('noUsers').style.display = 'block';
-                    document.getElementById('map').style.display = 'none';
-                } else {
-                    document.getElementById('noUsers').style.display = 'none';
-                    document.getElementById('map').style.display = 'block';
-
-                    // Массив для границ карты
-                    const bounds = [];
-
-                    // Добавление маркеров
-                    users.forEach(user => {
-                        const marker = L.marker(
-                            [user.latitude, user.longitude],
-                            { icon: createCustomIcon(user.avatar) }
-                        ).addTo(map);
-
-                        marker.bindPopup(createPopupContent(user), {
-                            maxWidth: 350,
-                            className: 'custom-popup'
-                        });
-
-                        markers.push(marker);
-                        bounds.push([user.latitude, user.longitude]);
-                    });
-
-                    // Центрируем карту по всем маркерам
-                    if (bounds.length > 0) {
-                        map.fitBounds(bounds, { padding: [50, 50] });
-                    }
-                }
-            } catch (error) {
-                console.error('Ошибка загрузки пользователей:', error);
-            }
-        }
-
-        // Загрузка статистики
-        async function loadStats() {
-            try {
-                const response = await fetch('/api/stats');
-                const stats = await response.json();
-
-                document.getElementById('totalUsers').textContent = stats.total_users;
-                document.getElementById('pendingNotifications').textContent = stats.pending_notifications;
-                document.getElementById('usersWithCoords').textContent = stats.users_with_coords;
-            } catch (error) {
-                console.error('Ошибка загрузки статистики:', error);
-            }
-        }
-
-        // Инициализация при загрузке страницы
-        window.addEventListener('load', async () => {
-            initMap();
-            await Promise.all([loadUsers(), loadStats()]);
-            document.getElementById('loading').style.display = 'none';
-
-            // Автообновление каждые 2 минуты
-            setInterval(() => {
-                loadUsers();
-                loadStats();
-            }, 120000);
+        // Кастомна іконка для маркерів
+        const customIcon = L.divIcon({
+            className: 'custom-marker',
+            html: '<div style="background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%); width: 30px; height: 30px; border-radius: 50%; border: 3px solid #e94560; box-shadow: 0 0 20px rgba(0, 212, 255, 0.8); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">⚡</div>',
+            iconSize: [30, 30],
+            iconAnchor: [15, 15]
         });
+
+        // Завантаження статистики
+        fetch('/api/stats')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('stats').innerHTML = `
+                    <div class="stat-card">
+                        <h3>👥 Всього користувачів</h3>
+                        <div class="value">${data.total_users}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>📍 З координатами</h3>
+                        <div class="value">${data.users_with_coords}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>🔔 Очікують сповіщення</h3>
+                        <div class="value">${data.pending_notifications}</div>
+                    </div>
+                `;
+            })
+            .catch(error => {
+                console.error('Помилка завантаження статистики:', error);
+                document.getElementById('stats').innerHTML = '<div class="loading" style="color: #e94560;">❌ Помилка завантаження статистики</div>';
+            });
+
+        // Завантаження користувачів
+        fetch('/api/users')
+            .then(response => response.json())
+            .then(users => {
+                // Додаємо маркери на карту
+                users.forEach(user => {
+                    const marker = L.marker([user.latitude, user.longitude], {icon: customIcon}).addTo(map);
+                    marker.bindPopup(`
+                        <h3>${user.username}</h3>
+                        <p><strong>📍 Адреса:</strong> ${user.city}, вул. ${user.street}, буд. ${user.house}</p>
+                        <p><strong>⚡ Графік:</strong></p>
+                        <pre style="background: #16213e; padding: 10px; border-radius: 5px; max-width: 300px; overflow: auto; font-size: 12px;">${user.last_schedule || 'Немає даних'}</pre>
+                    `);
+                });
+
+                // Відображення списку користувачів
+                const usersHtml = users.map(user => `
+                    <div class="user-card">
+                        <div class="user-info">
+                            ${user.avatar ? `<img src="${user.avatar}" class="user-avatar" alt="Avatar">` : '<div class="user-avatar" style="background: linear-gradient(135deg, #00d4ff, #0099cc); display: flex; align-items: center; justify-content: center; font-size: 24px;">👤</div>'}
+                            <div>
+                                <div class="username">${user.username}</div>
+                                <div class="address">📍 ${user.city}, вул. ${user.street}, буд. ${user.house}</div>
+                            </div>
+                        </div>
+                        <div class="schedule">
+                            <strong>⚡ Графік відключень:</strong><br>
+                            ${user.last_schedule || 'Немає даних'}
+                        </div>
+                    </div>
+                `).join('');
+
+                document.getElementById('users').innerHTML = usersHtml || '<div class="loading" style="color: #7a7a7a;">Користувачів поки немає</div>';
+
+                // Автоматичне масштабування карти
+                if (users.length > 0) {
+                    const bounds = L.latLngBounds(users.map(u => [u.latitude, u.longitude]));
+                    map.fitBounds(bounds, { padding: [50, 50] });
+                }
+            })
+            .catch(error => {
+                console.error('Помилка завантаження користувачів:', error);
+                document.getElementById('users').innerHTML = '<div class="loading" style="color: #e94560;">❌ Помилка завантаження користувачів</div>';
+            });
+
+        // Автооновлення кожні 30 секунд
+        setInterval(() => {
+            location.reload();
+        }, 30000);
     </script>
 </body>
 </html>
