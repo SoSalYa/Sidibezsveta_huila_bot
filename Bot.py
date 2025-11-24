@@ -1,3 +1,5 @@
+import os
+os.environ["DISCORD_NO_AUDIO"] = "1"
 import discord
 from discord.ext import commands, tasks
 from selenium import webdriver
@@ -8,7 +10,6 @@ from selenium.webdriver.chrome.options import Options
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from functools import wraps
 import asyncio
-import os
 from datetime import datetime, timedelta
 import psycopg2
 from psycopg2.extras import RealDictCursor
