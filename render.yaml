@@ -1,9 +1,10 @@
 services:
   - type: web
     name: power-outage-bot
-    env: python
+    runtime: python
     region: frankfurt
     plan: free
+
     buildCommand: pip install -r requirements.txt
     startCommand: python Bot.py
 
