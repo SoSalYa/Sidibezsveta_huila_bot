@@ -605,3 +605,147 @@ async def delete_address(ctx):
     else:
         await ctx.send('❌ Помилка при видаленні адреси')
 
+@tasks.loop(minutes=30)
+async def check_schedule_updates():
+    """Проверяет обновления графика для всех пользователей"""
+    try:
+        users = get_all_users()
+        print(f"🔄 Перевірка оновлень графіка для {len(users)} користувачів...")
+        
+        for user in users:
+            discord_id = user['discord_id']
+            city = user['city']
+            street = user['street']
+            house = user['house_number']
+            old_schedule = user.get('last_schedule', '')
+            
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, get_outage_schedule, city, street, house
+            )
+            new_schedule = result['schedule']
+            
+            if new_schedule != old_schedule and old_schedule:
+                update_user_schedule(discord_id, new_schedule)
+                
+                try:
+                    user_obj = await bot.fetch_user(discord_id)
+                    embed = discord.Embed(
+                        title="🔔 Графік відключень оновився!",
+                        description=new_schedule,
+                        color=discord.Color.orange()
+                    )
+                    embed.add_field(name="📍 Адреса", value=f"{city}, вул. {street}, буд. {house}", inline=False)
+                    embed.set_footer(text="Автоматичне сповіщення")
+                    
+                    await user_obj.send(embed=embed)
+                    print(f"✅ Уведомление отправлено пользователю {discord_id}")
+                except Exception as e:
+                    print(f"❌ Не удалось отправить уведомление пользователю {discord_id}: {e}")
+            
+            await asyncio.sleep(5)
+            
+    except Exception as e:
+        print(f"❌ Ошибка при проверке обновлений: {e}")
+
+@tasks.loop(minutes=5)
+async def check_upcoming_outages():
+    """Уведомляет пользователей за 30 минут до отключения"""
+    try:
+        now = datetime.now()
+        notification_time = now + timedelta(minutes=30)
+
+        notifications = get_pending_notifications()
+        print(f"⏰ Перевірка {len(notifications)} запланованих сповіщень...")
+
+        for notif in notifications:
+            outage_time = notif['outage_time']
+
+            if now < outage_time <= notification_time:
+                discord_id = notif['discord_id']
+
+                try:
+                    user = await bot.fetch_user(discord_id)
+                    user_data = get_user_address(discord_id)
+
+                    time_until = outage_time - now
+                    minutes = int(time_until.total_seconds() / 60)
+
+                    embed = discord.Embed(
+                        title="⚠️ Попередження про відключення!",
+                        description=f"Електроенергію буде відключено через **{minutes} хвилин**\n\n🕐 Час відключення: **{outage_time.strftime('%H:%M')}**",
+                        color=discord.Color.red()
+                    )
+
+                    if user_data:
+                        embed.add_field(
+                            name="📍 Адреса",
+                            value=f"{user_data['city']}, вул. {user_data['street']}, буд. {user_data['house_number']}",
+                            inline=False
+                        )
+
+                    embed.set_footer(text="Не забудь зарядити пристрої!")
+
+                    await user.send(embed=embed)
+                    mark_notification_sent(notif['id'])
+                    print(f"✅ Предупреждение отправлено пользователю {discord_id}")
+
+                except Exception as e:
+                    print(f"❌ Не удалось отправить предупреждение пользователю {discord_id}: {e}")
+
+        deleted = delete_old_notifications(24)
+        if deleted > 0:
+            print(f"🗑️ Удалено {deleted} старых уведомлений")
+
+    except Exception as e:
+        print(f"❌ Ошибка при проверке предстоящих отключений: {e}")
+
+@bot.command(name='help')
+async def help_command(ctx):
+    """Показує допомогу по командах"""
+    embed = discord.Embed(
+        title="📋 Довідка по командах",
+        description="Бот для перевірки графіків відключень електроенергії з автоматичними сповіщеннями",
+        color=discord.Color.green()
+    )
+    embed.add_field(
+        name="/когдасвет *місто* *вулиця* *будинок*",
+        value="Перевіряє та зберігає адресу. При повторному виклику без параметрів використає збережену адресу.",
+        inline=False
+    )
+    embed.add_field(
+        name="/моядреса",
+        value="Показує твою збережену адресу",
+        inline=False
+    )
+    embed.add_field(
+        name="/видалитиадресу",
+        value="Видаляє збережену адресу та вимикає сповіщення",
+        inline=False
+    )
+    embed.add_field(
+        name="🔔 Автоматичні сповіщення",
+        value="• Сповіщення про зміни в графіку (кожні 30 хв)\n• Попередження за 30 хв до відключення\n• Всі сповіщення надходять в особисті повідомлення",
+        inline=False
+    )
+    await ctx.send(embed=embed)
+
+def run_bot():
+    """Запуск Discord бота в отдельном потоке"""
+    TOKEN = os.getenv('DISCORD_BOT_TOKEN')
+    if TOKEN:
+        bot.run(TOKEN)
+    else:
+        print("❌ DISCORD_BOT_TOKEN не установлен!")
+
+def run_flask():
+    """Запуск Flask сервера"""
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
+
+if __name__ == '__main__':
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Запускаем Flask в основном потоке
+    run_flask()
