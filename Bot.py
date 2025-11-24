@@ -16,6 +16,7 @@ from psycopg2.pool import SimpleConnectionPool
 import re
 import threading
 import secrets
+import time
 
 # Настройка Flask
 app = Flask(__name__)
@@ -137,6 +138,7 @@ def geocode_address(city, street, house_number):
 
 # Функция для получения графика отключений
 def get_outage_schedule(city, street, house_number):
+    driver = None
     try:
         chrome_options = Options()
         chrome_options.add_argument('--headless')
@@ -145,6 +147,9 @@ def get_outage_schedule(city, street, house_number):
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+        
+        # Для Render.com - указываем путь к chromium
+        chrome_options.binary_location = '/usr/bin/chromium'
         
         driver = webdriver.Chrome(options=chrome_options)
         driver.get('https://www.dtek-oem.com.ua/ua/shutdowns')
@@ -155,22 +160,22 @@ def get_outage_schedule(city, street, house_number):
         city_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder*="населений пункт"], input[name="city"]')))
         city_input.clear()
         city_input.send_keys(city)
-        asyncio.sleep(2)
+        time.sleep(2)
         
         street_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder*="вулиця"], input[name="street"]')))
         street_input.clear()
         street_input.send_keys(street)
-        asyncio.sleep(2)
+        time.sleep(2)
         
         house_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder*="будинок"], input[name="house"]')))
         house_input.clear()
         house_input.send_keys(house_number)
-        asyncio.sleep(2)
+        time.sleep(2)
         
         search_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"], button:contains("Пошук")')))
         search_button.click()
         
-        asyncio.sleep(5)
+        time.sleep(5)
         
         schedule_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '.schedule, .outage-schedule, .result')))
         schedule_text = schedule_element.text
@@ -195,7 +200,7 @@ def get_outage_schedule(city, street, house_number):
         }
         
     except Exception as e:
-        if 'driver' in locals():
+        if driver:
             driver.quit()
         return {
             'schedule': f"Помилка при отриманні даних: {str(e)}",
