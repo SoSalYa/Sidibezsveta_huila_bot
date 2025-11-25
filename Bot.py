@@ -150,10 +150,11 @@ def geocode_address(city, street, house_number):
 
 def get_outage_schedule(city, street, house_number):
     """
-    ПОКРАЩЕНА функція для отримання графіка відключень з ДТЕК
-    - Детальне логування кожного кроку
-    - Множинні селектори для пошуку елементів
-    - Збереження скриншотів на кожному етапі
+    УЛУЧШЕННАЯ функция для получения графика отключений с ДТЕК
+    - Закрытие модальных окон
+    - Детальное логирование каждого шага
+    - Множественные селекторы для поиска элементов
+    - Сохранение скриншотов на каждом этапе
     - Повільне введення тексту для імітації користувача
     """
     driver = None
@@ -186,6 +187,75 @@ def get_outage_schedule(city, street, house_number):
         time.sleep(5)
         driver.save_screenshot('/tmp/1_page_loaded.png')
         print("✅ Сторінка завантажена")
+        
+        # ===== НОВИЙ КОД: ЗАКРИТТЯ МОДАЛЬНОГО ВІКНА =====
+        print("🔍 Перевіряю наявність модальних вікон...")
+        try:
+            # Спроба 1: Шукаємо кнопку закриття модального вікна
+            close_button_selectors = [
+                'button.modal__close',
+                'button[aria-label="Close"]',
+                '.modal__close',
+                '.m-attention__close',
+                'button.close',
+                '[data-dismiss="modal"]',
+                '.popup-close',
+                '//button[contains(@class, "close")]',
+                '//button[contains(@class, "modal__close")]'
+            ]
+            
+            modal_closed = False
+            for selector in close_button_selectors:
+                try:
+                    if selector.startswith('//'):
+                        close_btn = WebDriverWait(driver, 3).until(
+                            EC.element_to_be_clickable((By.XPATH, selector))
+                        )
+                    else:
+                        close_btn = WebDriverWait(driver, 3).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                        )
+                    
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", close_btn)
+                    time.sleep(0.5)
+                    
+                    try:
+                        close_btn.click()
+                    except:
+                        driver.execute_script("arguments[0].click();", close_btn)
+                    
+                    print(f"✅ Модальне вікно закрито через: {selector}")
+                    modal_closed = True
+                    time.sleep(2)
+                    driver.save_screenshot('/tmp/1.5_modal_closed.png')
+                    break
+                except:
+                    continue
+            
+            # Спроба 2: Якщо кнопка не знайдена, натискаємо Escape
+            if not modal_closed:
+                print("⚠️ Кнопка закриття не знайдена, пробую Escape...")
+                from selenium.webdriver.common.action_chains import ActionChains
+                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+                time.sleep(2)
+                driver.save_screenshot('/tmp/1.5_escape_pressed.png')
+                print("✅ Натиснуто Escape")
+            
+            # Спроба 3: Клік поза модальним вікном (на backdrop)
+            try:
+                backdrop = driver.find_element(By.CSS_SELECTOR, '.modal-backdrop, .modal__overlay, .overlay')
+                driver.execute_script("arguments[0].click();", backdrop)
+                print("✅ Клік по backdrop")
+                time.sleep(2)
+            except:
+                pass
+                
+        except Exception as e:
+            print(f"⚠️ Модальне вікно не знайдено або вже закрите: {e}")
+        
+        # Додаткова пауза після закриття модального вікна
+        time.sleep(3)
+        # ===== КІНЕЦЬ НОВОГО КОДУ =====
         
         # Функція для пошуку елемента з множинними селекторами
         def find_element_multi(selectors, wait_time=10):
@@ -237,7 +307,7 @@ def get_outage_schedule(city, street, house_number):
                     continue
             return False
         
-        print(f"📝 Заповнюю форму: {city}, {street}, {house_number}")
+        print(f"🔍 Заповнюю форму: {city}, {street}, {house_number}")
         
         # КРОК 1: Місто
         print("🔍 Заповнюю місто...")
@@ -245,6 +315,7 @@ def get_outage_schedule(city, street, house_number):
             'input[name="city"]',
             'input[placeholder*="населений"]',
             'input[id*="city"]',
+            'input#city',
             '//input[contains(@placeholder, "населений") or contains(@name, "city")]'
         ]
         
@@ -252,9 +323,18 @@ def get_outage_schedule(city, street, house_number):
         if not city_input:
             raise Exception("❌ Поле міста не знайдено")
         
+        # Прокручуємо до елемента і чекаємо
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", city_input)
-        time.sleep(0.5)
-        city_input.click()
+        time.sleep(1)
+        
+        # Пробуємо клікнути кілька разів
+        try:
+            WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[name="city"]')))
+            city_input.click()
+        except:
+            # Якщо звичайний клік не працює, використовуємо JavaScript
+            driver.execute_script("arguments[0].click();", city_input)
+        
         slow_type(city_input, city)
         
         driver.save_screenshot('/tmp/2_city_entered.png')
@@ -268,9 +348,10 @@ def get_outage_schedule(city, street, house_number):
         print("🔍 Заповнюю вулицю...")
         street_selectors = [
             'input[name="street"]',
-            'input[placeholder*="вулиця"]',
+            'input[placeholder*="вулиц"]',
             'input[id*="street"]',
-            '//input[contains(@placeholder, "вулиця") or contains(@name, "street")]'
+            'input#street',
+            '//input[contains(@placeholder, "вулиц") or contains(@name, "street")]'
         ]
         
         street_input = find_element_multi(street_selectors)
@@ -278,8 +359,14 @@ def get_outage_schedule(city, street, house_number):
             raise Exception("❌ Поле вулиці не знайдено")
         
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", street_input)
-        time.sleep(0.5)
-        street_input.click()
+        time.sleep(1)
+        
+        try:
+            WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[name="street"]')))
+            street_input.click()
+        except:
+            driver.execute_script("arguments[0].click();", street_input)
+        
         slow_type(street_input, street)
         
         driver.save_screenshot('/tmp/3_street_entered.png')
@@ -295,6 +382,7 @@ def get_outage_schedule(city, street, house_number):
             'input[name="house"]',
             'input[placeholder*="будинок"]',
             'input[id*="house"]',
+            'input#house',
             '//input[contains(@placeholder, "будинок") or contains(@name, "house")]'
         ]
         
@@ -303,8 +391,14 @@ def get_outage_schedule(city, street, house_number):
             raise Exception("❌ Поле будинку не знайдено")
         
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", house_input)
-        time.sleep(0.5)
-        house_input.click()
+        time.sleep(1)
+        
+        try:
+            WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[name="house"]')))
+            house_input.click()
+        except:
+            driver.execute_script("arguments[0].click();", house_input)
+        
         slow_type(house_input, house_number)
         
         driver.save_screenshot('/tmp/4_house_entered.png')
@@ -320,7 +414,7 @@ def get_outage_schedule(city, street, house_number):
             'button[type="submit"]',
             'button[class*="submit"]',
             'button[class*="search"]',
-            '//button[@type="submit" or contains(text(), "Пошук")]'
+            '//button[@type="submit" or contains(text(), "Пошук") or contains(text(), "Знайти")]'
         ]
         
         search_button = find_element_multi(button_selectors, wait_time=5)
@@ -448,7 +542,7 @@ def get_outage_schedule(city, street, house_number):
         
         # Спроба 2: Якщо таблиці не знайдені, парсимо весь текст
         if not schedule_text or len(schedule_text) < 50:
-            print("🔄 Пробую альтернативний парсинг...")
+            print("📄 Пробую альтернативний парсинг...")
             try:
                 page_text = driver.find_element(By.TAG_NAME, 'body').text
                 
