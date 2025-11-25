@@ -150,18 +150,12 @@ def geocode_address(city, street, house_number):
 
 def get_outage_schedule(city, street, house_number):
     """
-    УЛУЧШЕННАЯ функция для получения графика отключений с ДТЕК
-    - Закрытие модальных окон
-    - Детальное логирование каждого шага
-    - Множественные селекторы для поиска элементов
-    - Сохранение скриншотов на каждом этапе
-    - Повільне введення тексту для імітації користувача
+    ПОКРАЩЕНА функція для отримання графіка відключень з ДТЕК
     """
     driver = None
     try:
         chrome_options = Options()
-        # Закоментуй для локального тестування з UI
-        chrome_options.add_argument('--headless=new')  # Новий headless режим
+        chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
@@ -169,11 +163,8 @@ def get_outage_schedule(city, street, house_number):
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
         chrome_options.add_argument('--window-size=1920,1080')
         chrome_options.add_argument('--lang=uk-UA')
-        
-        # Додаткові опції для стабільності
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
-        
         chrome_options.binary_location = '/usr/bin/chromium'
         
         driver = webdriver.Chrome(options=chrome_options)
@@ -184,14 +175,13 @@ def get_outage_schedule(city, street, house_number):
         driver.get('https://www.dtek-oem.com.ua/ua/shutdowns')
         
         # Чекаємо повного завантаження
-        time.sleep(5)
+        time.sleep(7)
         driver.save_screenshot('/tmp/1_page_loaded.png')
         print("✅ Сторінка завантажена")
         
-        # ===== НОВИЙ КОД: ЗАКРИТТЯ МОДАЛЬНОГО ВІКНА =====
+        # ===== ЗАКРИТТЯ МОДАЛЬНОГО ВІКНА =====
         print("🔍 Перевіряю наявність модальних вікон...")
         try:
-            # Спроба 1: Шукаємо кнопку закриття модального вікна
             close_button_selectors = [
                 'button.modal__close',
                 'button[aria-label="Close"]',
@@ -218,12 +208,7 @@ def get_outage_schedule(city, street, house_number):
                     
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", close_btn)
                     time.sleep(0.5)
-                    
-                    try:
-                        close_btn.click()
-                    except:
-                        driver.execute_script("arguments[0].click();", close_btn)
-                    
+                    driver.execute_script("arguments[0].click();", close_btn)
                     print(f"✅ Модальне вікно закрито через: {selector}")
                     modal_closed = True
                     time.sleep(2)
@@ -232,7 +217,6 @@ def get_outage_schedule(city, street, house_number):
                 except:
                     continue
             
-            # Спроба 2: Якщо кнопка не знайдена, натискаємо Escape
             if not modal_closed:
                 print("⚠️ Кнопка закриття не знайдена, пробую Escape...")
                 from selenium.webdriver.common.action_chains import ActionChains
@@ -240,25 +224,14 @@ def get_outage_schedule(city, street, house_number):
                 time.sleep(2)
                 driver.save_screenshot('/tmp/1.5_escape_pressed.png')
                 print("✅ Натиснуто Escape")
-            
-            # Спроба 3: Клік поза модальним вікном (на backdrop)
-            try:
-                backdrop = driver.find_element(By.CSS_SELECTOR, '.modal-backdrop, .modal__overlay, .overlay')
-                driver.execute_script("arguments[0].click();", backdrop)
-                print("✅ Клік по backdrop")
-                time.sleep(2)
-            except:
-                pass
-                
         except Exception as e:
             print(f"⚠️ Модальне вікно не знайдено або вже закрите: {e}")
         
-        # Додаткова пауза після закриття модального вікна
         time.sleep(3)
-        # ===== КІНЕЦЬ НОВОГО КОДУ =====
+        # ===== КІНЕЦЬ ЗАКРИТТЯ МОДАЛЬНОГО ВІКНА =====
         
         # Функція для пошуку елемента з множинними селекторами
-        def find_element_multi(selectors, wait_time=10):
+        def find_element_multi(selectors, wait_time=15):
             for selector in selectors:
                 try:
                     if selector.startswith('//'):
@@ -275,36 +248,76 @@ def get_outage_schedule(city, street, house_number):
                     continue
             return None
         
-        # Функція для повільного введення тексту
-        def slow_type(element, text):
-            element.clear()
-            time.sleep(0.5)
-            for char in text:
-                element.send_keys(char)
-                time.sleep(0.1)
-            time.sleep(1)
+        # Функція для безпечного вводу тексту
+        def safe_input(element, text, field_name):
+            """Безпечний ввід тексту з перевірками"""
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    # Прокручуємо до елемента
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+                    time.sleep(1)
+                    
+                    # Чекаємо, поки елемент стане інтерактивним
+                    WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable(element)
+                    )
+                    
+                    # Очищуємо поле через JavaScript
+                    driver.execute_script("arguments[0].value = '';", element)
+                    time.sleep(0.5)
+                    
+                    # Фокусуємося на елементі
+                    driver.execute_script("arguments[0].focus();", element)
+                    time.sleep(0.3)
+                    
+                    # Вводимо текст посимвольно
+                    for char in text:
+                        element.send_keys(char)
+                        time.sleep(0.15)
+                    
+                    time.sleep(1)
+                    
+                    # Перевіряємо, чи текст введено
+                    current_value = element.get_attribute('value')
+                    if text.lower() in current_value.lower():
+                        print(f"✅ {field_name} введено успішно: {current_value}")
+                        return True
+                    else:
+                        print(f"⚠️ Спроба {attempt + 1}: текст не збігається. Очікувалось: {text}, отримано: {current_value}")
+                        
+                except Exception as e:
+                    print(f"⚠️ Спроба {attempt + 1} не вдалася для {field_name}: {e}")
+                    time.sleep(2)
+            
+            raise Exception(f"Не вдалося ввести текст у поле {field_name} після {max_attempts} спроб")
         
         # Функція для вибору з автозаповнення
-        def select_autocomplete():
+        def select_autocomplete(field_name):
             time.sleep(2)
             suggestions_selectors = [
                 '.suggestions li:first-child',
                 '.autocomplete-item:first-child',
                 '.dropdown-item:first-child',
                 '[role="option"]:first-child',
-                'ul li:first-child'
+                'ul li:first-child',
+                '.dropdown-menu li:first-child',
+                '.suggestion:first-child'
             ]
             
             for selector in suggestions_selectors:
                 try:
-                    suggestion = WebDriverWait(driver, 3).until(
+                    suggestion = WebDriverWait(driver, 5).until(
                         EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                     )
-                    suggestion.click()
-                    print(f"✅ Клікнуто автозаповнення: {selector}")
+                    driver.execute_script("arguments[0].click();", suggestion)
+                    print(f"✅ Вибрано автозаповнення для {field_name}: {selector}")
+                    time.sleep(1)
                     return True
                 except:
                     continue
+            
+            print(f"⚠️ Автозаповнення не знайдено для {field_name}, пробую Enter")
             return False
         
         print(f"🔍 Заповнюю форму: {city}, {street}, {house_number}")
@@ -313,33 +326,20 @@ def get_outage_schedule(city, street, house_number):
         print("🔍 Заповнюю місто...")
         city_selectors = [
             'input[name="city"]',
-            'input[placeholder*="населений"]',
+            'input[placeholder*="населен"]',
             'input[id*="city"]',
             'input#city',
-            '//input[contains(@placeholder, "населений") or contains(@name, "city")]'
+            '//input[contains(@placeholder, "населен") or contains(@name, "city")]'
         ]
         
         city_input = find_element_multi(city_selectors)
         if not city_input:
             raise Exception("❌ Поле міста не знайдено")
         
-        # Прокручуємо до елемента і чекаємо
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", city_input)
-        time.sleep(1)
-        
-        # Пробуємо клікнути кілька разів
-        try:
-            WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[name="city"]')))
-            city_input.click()
-        except:
-            # Якщо звичайний клік не працює, використовуємо JavaScript
-            driver.execute_script("arguments[0].click();", city_input)
-        
-        slow_type(city_input, city)
-        
+        safe_input(city_input, city, "Місто")
         driver.save_screenshot('/tmp/2_city_entered.png')
         
-        if not select_autocomplete():
+        if not select_autocomplete("Місто"):
             city_input.send_keys(Keys.ENTER)
         
         time.sleep(2)
@@ -358,20 +358,10 @@ def get_outage_schedule(city, street, house_number):
         if not street_input:
             raise Exception("❌ Поле вулиці не знайдено")
         
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", street_input)
-        time.sleep(1)
-        
-        try:
-            WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[name="street"]')))
-            street_input.click()
-        except:
-            driver.execute_script("arguments[0].click();", street_input)
-        
-        slow_type(street_input, street)
-        
+        safe_input(street_input, street, "Вулиця")
         driver.save_screenshot('/tmp/3_street_entered.png')
         
-        if not select_autocomplete():
+        if not select_autocomplete("Вулиця"):
             street_input.send_keys(Keys.ENTER)
         
         time.sleep(2)
@@ -390,20 +380,10 @@ def get_outage_schedule(city, street, house_number):
         if not house_input:
             raise Exception("❌ Поле будинку не знайдено")
         
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", house_input)
-        time.sleep(1)
-        
-        try:
-            WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[name="house"]')))
-            house_input.click()
-        except:
-            driver.execute_script("arguments[0].click();", house_input)
-        
-        slow_type(house_input, house_number)
-        
+        safe_input(house_input, house_number, "Будинок")
         driver.save_screenshot('/tmp/4_house_entered.png')
         
-        if not select_autocomplete():
+        if not select_autocomplete("Будинок"):
             house_input.send_keys(Keys.ENTER)
         
         time.sleep(2)
@@ -421,10 +401,7 @@ def get_outage_schedule(city, street, house_number):
         if search_button:
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", search_button)
             time.sleep(0.5)
-            try:
-                search_button.click()
-            except:
-                driver.execute_script("arguments[0].click();", search_button)
+            driver.execute_script("arguments[0].click();", search_button)
             print("✅ Кнопку натиснуто")
         else:
             print("⚠️ Кнопка не знайдена, пробую Enter")
@@ -455,14 +432,12 @@ def get_outage_schedule(city, street, house_number):
         
         # Шукаємо графік/таблиці
         try:
-            # Спроба 1: Таблиці
             tables = driver.find_elements(By.CSS_SELECTOR, 'table')
             print(f"🔍 Знайдено {len(tables)} таблиць")
             
             if tables:
                 for idx, table in enumerate(tables):
                     try:
-                        # Шукаємо заголовок (Сьогодні/Завтра)
                         header = f"📅 {'Сьогодні' if idx == 0 else 'Завтра'}"
                         try:
                             parent_text = table.find_element(By.XPATH, './preceding-sibling::*[1]').text
@@ -473,23 +448,20 @@ def get_outage_schedule(city, street, house_number):
                         
                         schedule_text += f"\n{header}\n{'='*40}\n"
                         
-                        # Парсимо рядки
                         rows = table.find_elements(By.TAG_NAME, 'tr')
                         confirmed = []
                         possible = []
                         
-                        for row in rows[1:]:  # Пропускаємо заголовок
+                        for row in rows[1:]:
                             cells = row.find_elements(By.TAG_NAME, 'td')
                             if len(cells) >= 2:
                                 time_slot = cells[0].text.strip()
                                 if not time_slot:
                                     continue
                                 
-                                # Перевіряємо статус відключення
                                 cell_html = cells[1].get_attribute('outerHTML')
                                 cell_class = cells[1].get_attribute('class')
                                 
-                                # Ознаки відключення
                                 is_outage = any([
                                     'gray' in cell_class.lower(),
                                     'dark' in cell_class.lower(),
@@ -497,7 +469,6 @@ def get_outage_schedule(city, street, house_number):
                                     'background' in cell_html and 'gray' in cell_html.lower()
                                 ])
                                 
-                                # Ознаки можливого відключення
                                 is_possible = any([
                                     'yellow' in cell_class.lower(),
                                     'warning' in cell_class.lower(),
@@ -506,7 +477,6 @@ def get_outage_schedule(city, street, house_number):
                                 
                                 if is_outage:
                                     confirmed.append(time_slot)
-                                    # Витягуємо час для нотифікацій
                                     try:
                                         start = time_slot.split('-')[0].strip()
                                         if ':' not in start:
@@ -517,7 +487,6 @@ def get_outage_schedule(city, street, house_number):
                                 elif is_possible:
                                     possible.append(time_slot)
                         
-                        # Форматуємо вивід
                         if confirmed:
                             schedule_text += "❌ ПІДТВЕРДЖЕНІ ВІДКЛЮЧЕННЯ:\n"
                             for slot in confirmed:
@@ -540,13 +509,11 @@ def get_outage_schedule(city, street, house_number):
         except Exception as e:
             print(f"⚠️ Помилка парсингу таблиць: {e}")
         
-        # Спроба 2: Якщо таблиці не знайдені, парсимо весь текст
+        # Якщо таблиці не знайдені, парсимо весь текст
         if not schedule_text or len(schedule_text) < 50:
             print("📄 Пробую альтернативний парсинг...")
             try:
                 page_text = driver.find_element(By.TAG_NAME, 'body').text
-                
-                # Шукаємо часові інтервали
                 time_patterns = re.findall(r'(\d{2})-(\d{2})', page_text)
                 if time_patterns:
                     schedule_text = "📋 Знайдені часові інтервали:\n\n"
@@ -559,7 +526,6 @@ def get_outage_schedule(city, street, house_number):
         
         driver.quit()
         
-        # Фінальна перевірка
         if not schedule_text or len(schedule_text) < 30:
             schedule_text = "⚠️ Графік не знайдено.\n\n"
             schedule_text += "Можливі причини:\n"
