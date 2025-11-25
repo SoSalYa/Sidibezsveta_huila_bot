@@ -146,286 +146,337 @@ def geocode_address(city, street, house_number):
         print(f"Помилка геокодування: {e}")
         return None, None
 
-# ОНОВЛЕНА функція для отримання графіка відключень
+# функцію get_outage_schedule
+
 def get_outage_schedule(city, street, house_number):
+    """
+    ПОКРАЩЕНА функція для отримання графіка відключень з ДТЕК
+    - Детальне логування кожного кроку
+    - Множинні селектори для пошуку елементів
+    - Збереження скриншотів на кожному етапі
+    - Повільне введення тексту для імітації користувача
+    """
     driver = None
     try:
         chrome_options = Options()
-        chrome_options.add_argument('--headless')
+        # Закоментуй для локального тестування з UI
+        chrome_options.add_argument('--headless=new')  # Новий headless режим
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
         chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--lang=uk-UA')
         
-        # Для Render.com - вказуємо шлях до chromium
+        # Додаткові опції для стабільності
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        
         chrome_options.binary_location = '/usr/bin/chromium'
         
         driver = webdriver.Chrome(options=chrome_options)
-        driver.set_page_load_timeout(30)
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        driver.set_page_load_timeout(60)
         
         print(f"🔍 Відкриваю сайт ДТЕК...")
         driver.get('https://www.dtek-oem.com.ua/ua/shutdowns')
         
-        wait = WebDriverWait(driver, 20)
-        time.sleep(3)
+        # Чекаємо повного завантаження
+        time.sleep(5)
+        driver.save_screenshot('/tmp/1_page_loaded.png')
+        print("✅ Сторінка завантажена")
+        
+        # Функція для пошуку елемента з множинними селекторами
+        def find_element_multi(selectors, wait_time=10):
+            for selector in selectors:
+                try:
+                    if selector.startswith('//'):
+                        el = WebDriverWait(driver, wait_time).until(
+                            EC.presence_of_element_located((By.XPATH, selector))
+                        )
+                    else:
+                        el = WebDriverWait(driver, wait_time).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                        )
+                    print(f"✅ Знайдено елемент: {selector}")
+                    return el
+                except:
+                    continue
+            return None
+        
+        # Функція для повільного введення тексту
+        def slow_type(element, text):
+            element.clear()
+            time.sleep(0.5)
+            for char in text:
+                element.send_keys(char)
+                time.sleep(0.1)
+            time.sleep(1)
+        
+        # Функція для вибору з автозаповнення
+        def select_autocomplete():
+            time.sleep(2)
+            suggestions_selectors = [
+                '.suggestions li:first-child',
+                '.autocomplete-item:first-child',
+                '.dropdown-item:first-child',
+                '[role="option"]:first-child',
+                'ul li:first-child'
+            ]
+            
+            for selector in suggestions_selectors:
+                try:
+                    suggestion = WebDriverWait(driver, 3).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    )
+                    suggestion.click()
+                    print(f"✅ Клікнуто автозаповнення: {selector}")
+                    return True
+                except:
+                    continue
+            return False
         
         print(f"📝 Заповнюю форму: {city}, {street}, {house_number}")
         
-        # Заповнення поля міста
-        try:
-            city_input = wait.until(EC.presence_of_element_located((
-                By.CSS_SELECTOR, 
-                'input[placeholder*="населений пункт"], input[placeholder*="Населений пункт"], input[name="city"], #city'
-            )))
-            city_input.clear()
-            city_input.send_keys(city)
-            time.sleep(2)
-            
+        # КРОК 1: Місто
+        print("🔍 Заповнюю місто...")
+        city_selectors = [
+            'input[name="city"]',
+            'input[placeholder*="населений"]',
+            'input[id*="city"]',
+            '//input[contains(@placeholder, "населений") or contains(@name, "city")]'
+        ]
+        
+        city_input = find_element_multi(city_selectors)
+        if not city_input:
+            raise Exception("❌ Поле міста не знайдено")
+        
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", city_input)
+        time.sleep(0.5)
+        city_input.click()
+        slow_type(city_input, city)
+        
+        driver.save_screenshot('/tmp/2_city_entered.png')
+        
+        if not select_autocomplete():
+            city_input.send_keys(Keys.ENTER)
+        
+        time.sleep(2)
+        
+        # КРОК 2: Вулиця
+        print("🔍 Заповнюю вулицю...")
+        street_selectors = [
+            'input[name="street"]',
+            'input[placeholder*="вулиця"]',
+            'input[id*="street"]',
+            '//input[contains(@placeholder, "вулиця") or contains(@name, "street")]'
+        ]
+        
+        street_input = find_element_multi(street_selectors)
+        if not street_input:
+            raise Exception("❌ Поле вулиці не знайдено")
+        
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", street_input)
+        time.sleep(0.5)
+        street_input.click()
+        slow_type(street_input, street)
+        
+        driver.save_screenshot('/tmp/3_street_entered.png')
+        
+        if not select_autocomplete():
+            street_input.send_keys(Keys.ENTER)
+        
+        time.sleep(2)
+        
+        # КРОК 3: Будинок
+        print("🔍 Заповнюю будинок...")
+        house_selectors = [
+            'input[name="house"]',
+            'input[placeholder*="будинок"]',
+            'input[id*="house"]',
+            '//input[contains(@placeholder, "будинок") or contains(@name, "house")]'
+        ]
+        
+        house_input = find_element_multi(house_selectors)
+        if not house_input:
+            raise Exception("❌ Поле будинку не знайдено")
+        
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", house_input)
+        time.sleep(0.5)
+        house_input.click()
+        slow_type(house_input, house_number)
+        
+        driver.save_screenshot('/tmp/4_house_entered.png')
+        
+        if not select_autocomplete():
+            house_input.send_keys(Keys.ENTER)
+        
+        time.sleep(2)
+        
+        # КРОК 4: Натискаємо пошук
+        print("🔍 Натискаю кнопку пошуку...")
+        button_selectors = [
+            'button[type="submit"]',
+            'button[class*="submit"]',
+            'button[class*="search"]',
+            '//button[@type="submit" or contains(text(), "Пошук")]'
+        ]
+        
+        search_button = find_element_multi(button_selectors, wait_time=5)
+        if search_button:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", search_button)
+            time.sleep(0.5)
             try:
-                city_suggestion = wait.until(EC.element_to_be_clickable((
-                    By.CSS_SELECTOR, 
-                    '.suggestions li:first-child, .autocomplete-item:first-child, .dropdown-item:first-child'
-                )))
-                city_suggestion.click()
-                time.sleep(1)
+                search_button.click()
             except:
-                city_input.send_keys(Keys.ARROW_DOWN)
-                city_input.send_keys(Keys.ENTER)
-                time.sleep(1)
-        except Exception as e:
-            print(f"⚠️ Помилка заповнення міста: {e}")
+                driver.execute_script("arguments[0].click();", search_button)
+            print("✅ Кнопку натиснуто")
+        else:
+            print("⚠️ Кнопка не знайдена, пробую Enter")
+            house_input.send_keys(Keys.ENTER)
         
-        # Заповнення поля вулиці
-        try:
-            street_input = wait.until(EC.presence_of_element_located((
-                By.CSS_SELECTOR, 
-                'input[placeholder*="вулиця"], input[placeholder*="Вулиця"], input[name="street"], #street'
-            )))
-            street_input.clear()
-            street_input.send_keys(street)
-            time.sleep(2)
-            
-            try:
-                street_suggestion = wait.until(EC.element_to_be_clickable((
-                    By.CSS_SELECTOR, 
-                    '.suggestions li:first-child, .autocomplete-item:first-child, .dropdown-item:first-child'
-                )))
-                street_suggestion.click()
-                time.sleep(1)
-            except:
-                street_input.send_keys(Keys.ARROW_DOWN)
-                street_input.send_keys(Keys.ENTER)
-                time.sleep(1)
-        except Exception as e:
-            print(f"⚠️ Помилка заповнення вулиці: {e}")
+        driver.save_screenshot('/tmp/5_search_clicked.png')
         
-        # Заповнення поля будинку
-        try:
-            house_input = wait.until(EC.presence_of_element_located((
-                By.CSS_SELECTOR, 
-                'input[placeholder*="будинок"], input[placeholder*="Будинок"], input[name="house"], #house'
-            )))
-            house_input.clear()
-            house_input.send_keys(house_number)
-            time.sleep(2)
-            
-            try:
-                house_suggestion = wait.until(EC.element_to_be_clickable((
-                    By.CSS_SELECTOR, 
-                    '.suggestions li:first-child, .autocomplete-item:first-child, .dropdown-item:first-child'
-                )))
-                house_suggestion.click()
-                time.sleep(1)
-            except:
-                house_input.send_keys(Keys.ARROW_DOWN)
-                house_input.send_keys(Keys.ENTER)
-                time.sleep(1)
-        except Exception as e:
-            print(f"⚠️ Помилка заповнення будинку: {e}")
+        # КРОК 5: Чекаємо результати
+        print("⏳ Чекаю на результати (15 сек)...")
+        time.sleep(15)
         
-        # Натискаємо кнопку пошуку
-        try:
-            search_button = wait.until(EC.element_to_be_clickable((
-                By.CSS_SELECTOR, 
-                'button[type="submit"], button.search-btn, button:contains("Пошук"), .search-button'
-            )))
-            driver.execute_script("arguments[0].scrollIntoView(true);", search_button)
-            time.sleep(1)
-            search_button.click()
-            print("🔍 Натиснуто кнопку пошуку")
-        except Exception as e:
-            print(f"⚠️ Помилка натискання кнопки: {e}")
-            try:
-                driver.execute_script("document.querySelector('button[type=\"submit\"]').click()")
-            except:
-                pass
+        driver.save_screenshot('/tmp/6_results.png')
+        print("📸 Скриншот результатів збережено")
         
-        time.sleep(5)
-        
-        # НОВИЙ ПАРСИНГ ГРАФІКА
+        # КРОК 6: Парсимо результати
+        print("📊 Починаю парсинг...")
         schedule_text = ""
         outage_times = []
         
-        # Отримуємо дату останнього оновлення
+        # Шукаємо дату оновлення
         try:
-            update_info = driver.find_element(By.XPATH, 
-                "//*[contains(text(), 'Дата та час останнього оновлення')]"
-            ).text
-            schedule_text += f"ℹ️ {update_info}\n\n"
-            print(f"✅ Знайдено інфо про оновлення: {update_info}")
-        except Exception as e:
-            print(f"⚠️ Не знайдено інфо про оновлення: {e}")
+            update_elem = driver.find_element(By.XPATH, 
+                "//*[contains(text(), 'Дата та час останнього оновлення')]")
+            schedule_text += f"ℹ️ {update_elem.text}\n\n"
+            print(f"✅ Знайдено дату оновлення")
+        except:
+            print("⚠️ Дата оновлення не знайдена")
         
-        # Шукаємо таблиці з графіком
+        # Шукаємо графік/таблиці
         try:
-            tables = driver.find_elements(By.CSS_SELECTOR, 'table, .schedule-table, [class*="table"]')
+            # Спроба 1: Таблиці
+            tables = driver.find_elements(By.CSS_SELECTOR, 'table')
             print(f"🔍 Знайдено {len(tables)} таблиць")
             
-            for idx, table in enumerate(tables):
-                try:
-                    # Шукаємо заголовок таблиці
-                    table_header = None
+            if tables:
+                for idx, table in enumerate(tables):
                     try:
-                        parent = table.find_element(By.XPATH, './..')
-                        siblings = parent.find_elements(By.XPATH, './*')
-                        
-                        for sibling in siblings:
-                            sibling_text = sibling.text.strip().lower()
-                            if any(date_word in sibling_text for date_word in ['сьогодні', 'завтра', 'на сьогодні', 'на завтра']):
-                                table_header = sibling.text.strip()
-                                break
-                    except Exception as e:
-                        print(f"⚠️ Не вдалося знайти заголовок таблиці: {e}")
-                    
-                    if not table_header:
-                        table_header = "📅 Сьогодні" if idx == 0 else "📅 Завтра"
-                    
-                    schedule_text += f"\n{'='*40}\n{table_header}\n{'='*40}\n\n"
-                    
-                    rows = table.find_elements(By.TAG_NAME, 'tr')
-                    print(f"📊 Таблиця {idx + 1} має {len(rows)} рядків")
-                    
-                    confirmed_outages = []
-                    possible_outages = []
-                    
-                    for row_idx, row in enumerate(rows[1:], 1):
+                        # Шукаємо заголовок (Сьогодні/Завтра)
+                        header = f"📅 {'Сьогодні' if idx == 0 else 'Завтра'}"
                         try:
+                            parent_text = table.find_element(By.XPATH, './preceding-sibling::*[1]').text
+                            if parent_text:
+                                header = parent_text
+                        except:
+                            pass
+                        
+                        schedule_text += f"\n{header}\n{'='*40}\n"
+                        
+                        # Парсимо рядки
+                        rows = table.find_elements(By.TAG_NAME, 'tr')
+                        confirmed = []
+                        possible = []
+                        
+                        for row in rows[1:]:  # Пропускаємо заголовок
                             cells = row.find_elements(By.TAG_NAME, 'td')
                             if len(cells) >= 2:
                                 time_slot = cells[0].text.strip()
-                                cell_html = cells[1].get_attribute('innerHTML').lower()
-                                cell_text = cells[1].text.strip()
-                                cell_class = cells[1].get_attribute('class').lower()
+                                if not time_slot:
+                                    continue
                                 
-                                # Перевірка на відключення
-                                has_outage = any([
-                                    'outage' in cell_class,
-                                    'offline' in cell_class,
-                                    'blackout' in cell_class,
-                                    'outage' in cell_html,
-                                    'offline' in cell_html,
-                                    '<svg' in cell_html and 'cross' in cell_html,
-                                    '<svg' in cell_html and 'x' in cell_html,
-                                    '❌' in cell_text,
-                                    '✕' in cell_text,
-                                    '×' in cell_text,
-                                    'background' in cell_html and ('gray' in cell_html or 'grey' in cell_html or 'dark' in cell_html)
+                                # Перевіряємо статус відключення
+                                cell_html = cells[1].get_attribute('outerHTML')
+                                cell_class = cells[1].get_attribute('class')
+                                
+                                # Ознаки відключення
+                                is_outage = any([
+                                    'gray' in cell_class.lower(),
+                                    'dark' in cell_class.lower(),
+                                    'outage' in cell_class.lower(),
+                                    'background' in cell_html and 'gray' in cell_html.lower()
                                 ])
                                 
-                                has_possible = any([
-                                    'possible' in cell_class,
-                                    'maybe' in cell_class,
-                                    'warning' in cell_class,
-                                    'possible' in cell_html,
-                                    'yellow' in cell_html,
-                                    '⚠' in cell_text,
-                                    '⚡' in cell_text and '❌' not in cell_text
+                                # Ознаки можливого відключення
+                                is_possible = any([
+                                    'yellow' in cell_class.lower(),
+                                    'warning' in cell_class.lower(),
+                                    'possible' in cell_class.lower()
                                 ])
                                 
-                                if time_slot:
-                                    if has_outage:
-                                        confirmed_outages.append(time_slot)
-                                        try:
-                                            start_time = time_slot.split('-')[0].strip()
-                                            if ':' not in start_time:
-                                                start_time = f"{start_time[:2]}:{start_time[2:]}"
-                                            outage_times.append(start_time)
-                                            print(f"✅ Знайдено відключення: {time_slot}")
-                                        except:
-                                            pass
-                                    elif has_possible:
-                                        possible_outages.append(time_slot)
-                                        print(f"⚠️ Знайдено можливе відключення: {time_slot}")
+                                if is_outage:
+                                    confirmed.append(time_slot)
+                                    # Витягуємо час для нотифікацій
+                                    try:
+                                        start = time_slot.split('-')[0].strip()
+                                        if ':' not in start:
+                                            start = f"{start}:00"
+                                        outage_times.append(start)
+                                    except:
+                                        pass
+                                elif is_possible:
+                                    possible.append(time_slot)
                         
-                        except Exception as e:
-                            print(f"⚠️ Помилка обробки рядка {row_idx}: {e}")
-                            continue
-                    
-                    # Форматуємо вивід
-                    if confirmed_outages:
-                        schedule_text += "❌ **ПІДТВЕРДЖЕНІ ВІДКЛЮЧЕННЯ:**\n"
-                        for slot in confirmed_outages:
-                            schedule_text += f"  • {slot}\n"
+                        # Форматуємо вивід
+                        if confirmed:
+                            schedule_text += "❌ ПІДТВЕРДЖЕНІ ВІДКЛЮЧЕННЯ:\n"
+                            for slot in confirmed:
+                                schedule_text += f"  • {slot}\n"
+                        
+                        if possible:
+                            schedule_text += "\n⚠️ МОЖЛИВІ ВІДКЛЮЧЕННЯ:\n"
+                            for slot in possible:
+                                schedule_text += f"  • {slot}\n"
+                        
+                        if not confirmed and not possible:
+                            schedule_text += "✅ Відключення не заплановані\n"
+                        
                         schedule_text += "\n"
+                        print(f"✅ Таблиця {idx+1}: {len(confirmed)} підтверджених, {len(possible)} можливих")
                     
-                    if possible_outages:
-                        schedule_text += "⚠️ **МОЖЛИВІ ВІДКЛЮЧЕННЯ:**\n"
-                        for slot in possible_outages:
-                            schedule_text += f"  • {slot}\n"
-                        schedule_text += "\n"
-                    
-                    if not confirmed_outages and not possible_outages:
-                        schedule_text += "✅ Відключення не заплановані\n\n"
-                    
-                    print(f"✅ Оброблено таблицю {idx + 1}: {len(confirmed_outages)} підтверджених, {len(possible_outages)} можливих")
-                    
-                except Exception as e:
-                    print(f"⚠️ Помилка обробки таблиці {idx}: {e}")
-                    continue
+                    except Exception as e:
+                        print(f"⚠️ Помилка таблиці {idx}: {e}")
         
         except Exception as e:
-            print(f"⚠️ Помилка пошуку таблиць: {e}")
+            print(f"⚠️ Помилка парсингу таблиць: {e}")
         
-        # Альтернативний метод
+        # Спроба 2: Якщо таблиці не знайдені, парсимо весь текст
         if not schedule_text or len(schedule_text) < 50:
-            print("🔄 Використовую альтернативний метод парсингу...")
+            print("🔄 Пробую альтернативний парсинг...")
             try:
-                body_text = driver.find_element(By.TAG_NAME, 'body').text
-                time_patterns = re.findall(r'(\d{2})-(\d{2})', body_text)
+                page_text = driver.find_element(By.TAG_NAME, 'body').text
                 
+                # Шукаємо часові інтервали
+                time_patterns = re.findall(r'(\d{2})-(\d{2})', page_text)
                 if time_patterns:
                     schedule_text = "📋 Знайдені часові інтервали:\n\n"
-                    for hour_start, hour_end in set(time_patterns):
-                        time_slot = f"{hour_start}:00-{hour_end}:00"
-                        schedule_text += f"• {time_slot}\n"
-                        outage_times.append(f"{hour_start}:00")
-                    print(f"✅ Використано альтернативний метод, знайдено {len(time_patterns)} інтервалів")
+                    for h1, h2 in set(time_patterns):
+                        schedule_text += f"• {h1}:00-{h2}:00\n"
+                        outage_times.append(f"{h1}:00")
+                    print(f"✅ Альтернативний парсинг: {len(time_patterns)} інтервалів")
             except Exception as e:
-                print(f"⚠️ Альтернативний метод не спрацював: {e}")
-        
-        # Зберігаємо скриншот
-        try:
-            screenshot_path = f'/tmp/schedule_debug_{city}_{house_number}.png'
-            driver.save_screenshot(screenshot_path)
-            print(f"📸 Скриншот збережено: {screenshot_path}")
-        except:
-            pass
+                print(f"⚠️ Альтернативний парсинг не вдався: {e}")
         
         driver.quit()
         
         # Фінальна перевірка
         if not schedule_text or len(schedule_text) < 30:
-            schedule_text = "⚠️ Графік відключень не знайдено.\n\n"
+            schedule_text = "⚠️ Графік не знайдено.\n\n"
             schedule_text += "Можливі причини:\n"
             schedule_text += "• Сайт ДТЕК змінив структуру\n"
-            schedule_text += "• Адреса не обслуговується ДТЕК\n"
-            schedule_text += "• Невірно вказана адреса\n\n"
-            schedule_text += "🔗 Перевір вручну: https://www.dtek-oem.com.ua/ua/shutdowns"
+            schedule_text += "• Адреса не обслуговується\n"
+            schedule_text += "• Невірна адреса\n\n"
+            schedule_text += "💡 Перевір скриншоти в /tmp/ для діагностики\n"
+            schedule_text += "🔗 https://www.dtek-oem.com.ua/ua/shutdowns"
         
         outage_times = list(set(outage_times))
-        print(f"✅ Парсинг завершено. Знайдено {len(outage_times)} унікальних часів відключень")
+        print(f"✅ Завершено! Знайдено {len(outage_times)} часів відключень")
         
         return {
             'schedule': schedule_text.strip(),
@@ -435,17 +486,17 @@ def get_outage_schedule(city, street, house_number):
     except Exception as e:
         if driver:
             try:
-                driver.save_screenshot(f'/tmp/error_screenshot_{int(time.time())}.png')
+                driver.save_screenshot(f'/tmp/ERROR_{int(time.time())}.png')
+                print(f"📸 Скриншот помилки збережено")
             except:
                 pass
             driver.quit()
-        error_msg = f"❌ Помилка при отриманні даних: {str(e)}\n\n"
-        error_msg += "Можливі причини:\n"
-        error_msg += "• Сайт ДТЕК тимчасово недоступний\n"
-        error_msg += "• Невірна адреса\n"
-        error_msg += "• Адреса не обслуговується ДТЕК\n\n"
-        error_msg += "🔗 Спробуй перевірити вручну: https://www.dtek-oem.com.ua/ua/shutdowns"
+        
+        error_msg = f"❌ Помилка: {str(e)}\n\n"
+        error_msg += "📸 Перевір скриншоти в /tmp/\n"
+        error_msg += "🔗 https://www.dtek-oem.com.ua/ua/shutdowns"
         print(error_msg)
+        
         return {
             'schedule': error_msg,
             'outage_times': []
