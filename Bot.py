@@ -165,7 +165,7 @@ def get_outage_schedule_from_api(city, street, house_number):
                 "street": street,
                 "house": house_number
             },
-            timeout=120  # 2 хвилини таймаут
+            timeout=180  # 3 хвилини таймаут
         )
         
         if response.status_code == 200:
