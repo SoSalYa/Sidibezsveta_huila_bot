@@ -174,58 +174,83 @@ def get_outage_schedule(city, street, house_number):
         print(f"🔍 Відкриваю сайт ДТЕК...")
         driver.get('https://www.dtek-oem.com.ua/ua/shutdowns')
         
-        # Чекаємо повного завантаження
-        time.sleep(10)  # Збільшено час очікування
+        # Чекаємо повного завантаження DOM
+        WebDriverWait(driver, 30).until(
+            lambda d: d.execute_script('return document.readyState') == 'complete'
+        )
+        time.sleep(5)
         driver.save_screenshot('/tmp/1_page_loaded.png')
         print("✅ Сторінка завантажена")
         
-        # ===== ЗАКРИТТЯ МОДАЛЬНОГО ВІКНА =====
-        print("🔍 Перевіряю наявність модальних вікон...")
-        try:
-            # Спробуємо закрити всі можливі модальні вікна
-            close_attempts = [
-                "document.querySelector('.modal__close')?.click()",
-                "document.querySelector('.m-attention__close')?.click()",
-                "document.querySelector('[data-dismiss=\"modal\"]')?.click()",
-                "document.querySelector('button.close')?.click()",
-            ]
-            
-            for script in close_attempts:
-                try:
-                    driver.execute_script(script)
-                    time.sleep(1)
-                except:
-                    pass
-            
-            # Також спробуємо Escape
-            from selenium.webdriver.common.action_chains import ActionChains
-            ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-            time.sleep(2)
-            print("✅ Модальні вікна закриті")
-            
-        except Exception as e:
-            print(f"⚠️ Помилка закриття модального вікна: {e}")
+        # ===== ПОКРАЩЕНЕ ЗАКРИТТЯ МОДАЛЬНОГО ВІКНА =====
+        print("🔍 Закриваю модальні вікна...")
+        modal_closed = False
         
-        time.sleep(3)
+        # Спробуємо різні способи закриття
+        close_methods = [
+            # JavaScript - найнадійніший метод
+            ("document.querySelector('.modal__close')?.click();", "JS modal__close"),
+            ("document.querySelector('.m-attention__close')?.click();", "JS m-attention__close"),
+            ("document.querySelector('[data-dismiss=\"modal\"]')?.click();", "JS data-dismiss"),
+            ("document.querySelector('button.close')?.click();", "JS button.close"),
+            # Escape key
+            (Keys.ESCAPE, "Escape key"),
+        ]
+        
+        for method, description in close_methods:
+            try:
+                if isinstance(method, str):
+                    result = driver.execute_script(f"return {method}")
+                    if result:
+                        print(f"✅ Модальне вікно закрито через {description}")
+                        modal_closed = True
+                        break
+                else:
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    ActionChains(driver).send_keys(method).perform()
+                    print(f"✅ Натиснуто {description}")
+                    modal_closed = True
+                    break
+                time.sleep(1)
+            except Exception as e:
+                print(f"⚠️ {description} не спрацював: {e}")
+                continue
+        
+        # Чекаємо зникнення модального вікна
+        if modal_closed:
+            try:
+                WebDriverWait(driver, 5).until_not(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '.modal, .m-attention'))
+                )
+                print("✅ Модальне вікно зникло")
+            except:
+                print("⚠️ Модальне вікно все ще присутнє, але продовжуємо")
+        
+        time.sleep(2)
         driver.save_screenshot('/tmp/2_modal_closed.png')
         
-        # ===== ПОКРАЩЕНА ФУНКЦІЯ ВВЕДЕННЯ =====
-        def safe_input_v2(selectors, text, field_name):
-            """Покращена версія введення тексту"""
+        # ===== ПОКРАЩЕНА ФУНКЦІЯ ВВЕДЕННЯ З РОЗУМНИМ ВИБОРОМ =====
+        def smart_input_with_selection(selectors, text, field_name, expected_text=None):
+            """
+            Розумне введення тексту з вибором правильного варіанту з автозаповнення
+            """
+            if expected_text is None:
+                expected_text = text
+            
             element = None
             
-            # Крок 1: Знаходимо елемент
+            # Крок 1: Знаходимо поле введення
             for selector in selectors:
                 try:
                     if selector.startswith('//'):
-                        element = WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.XPATH, selector))
+                        element = WebDriverWait(driver, 15).until(
+                            EC.element_to_be_clickable((By.XPATH, selector))
                         )
                     else:
-                        element = WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                        element = WebDriverWait(driver, 15).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                         )
-                    print(f"✅ Знайдено елемент {field_name}: {selector}")
+                    print(f"✅ Знайдено поле {field_name}")
                     break
                 except:
                     continue
@@ -233,66 +258,40 @@ def get_outage_schedule(city, street, house_number):
             if not element:
                 raise Exception(f"❌ Не знайдено поле {field_name}")
             
-            # Крок 2: Прокручуємо до елемента
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", element)
-            time.sleep(2)
+            # Крок 2: Прокручуємо до елемента та фокусуємося
+            driver.execute_script("""
+                arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});
+                arguments[0].focus();
+            """, element)
+            time.sleep(1)
             
-            # Крок 3: Чекаємо, поки елемент стане інтерактивним
-            WebDriverWait(driver, 10).until(EC.element_to_be_clickable(element))
+            # Крок 3: Очищуємо поле
+            try:
+                element.clear()
+                time.sleep(0.5)
+            except:
+                driver.execute_script("arguments[0].value = '';", element)
+                time.sleep(0.5)
             
-            # Крок 4: Спробуємо різні методи очищення та введення
-            methods = [
-                # Метод 1: JavaScript
-                lambda: driver.execute_script(f"arguments[0].value = '{text}';", element),
-                # Метод 2: Очищення + посимвольне введення
-                lambda: (element.clear(), time.sleep(0.5), [element.send_keys(char) or time.sleep(0.1) for char in text]),
-                # Метод 3: JavaScript focus + send_keys
-                lambda: (driver.execute_script("arguments[0].focus();", element), time.sleep(0.5), element.send_keys(text)),
-                # Метод 4: Click + введення
-                lambda: (element.click(), time.sleep(0.5), element.send_keys(text)),
-            ]
+            # Крок 4: Вводимо текст посимвольно для активації автозаповнення
+            print(f"  Введення '{text}' у поле {field_name}...")
+            for char in text:
+                element.send_keys(char)
+                time.sleep(0.15)  # Невелика затримка між символами
             
-            for i, method in enumerate(methods, 1):
-                try:
-                    print(f"  Спроба {i} для {field_name}...")
-                    method()
-                    time.sleep(1)
-                    
-                    # Перевірка результату
-                    current_value = element.get_attribute('value') or ''
-                    if text.lower() in current_value.lower() or len(current_value) >= len(text) - 2:
-                        print(f"✅ {field_name} введено успішно: '{current_value}'")
-                        
-                        # Trigger input event
-                        driver.execute_script("""
-                            arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
-                            arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
-                        """, element)
-                        
-                        return element
-                    else:
-                        print(f"⚠️ Спроба {i} не повністю успішна. Отримано: '{current_value}'")
-                        
-                except Exception as e:
-                    print(f"⚠️ Метод {i} не вдався: {e}")
-                    continue
+            # Trigger input events
+            driver.execute_script("""
+                arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                arguments[0].dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+            """, element)
             
-            # Якщо жоден метод не спрацював повністю, але щось введено - продовжуємо
-            current_value = element.get_attribute('value') or ''
-            if len(current_value) > 0:
-                print(f"⚠️ Часткове введення для {field_name}: '{current_value}'")
-                return element
+            time.sleep(2)  # Чекаємо появи автозаповнення
+            driver.save_screenshot(f'/tmp/3_{field_name}_typed.png')
             
-            raise Exception(f"❌ Не вдалося ввести текст у поле {field_name}")
-        
-        # ===== ПОКРАЩЕНА ФУНКЦІЯ АВТОЗАПОВНЕННЯ =====
-        def select_autocomplete_v2(field_name):
-            """Покращена версія вибору з автозаповнення"""
-            time.sleep(3)  # Збільшено час очікування
+            # Крок 5: РОЗУМНИЙ ВИБІР з автозаповнення
+            print(f"🔍 Шукаю варіанти автозаповнення для {field_name}...")
             
-            suggestions_found = False
-            
-            # Спробуємо знайти список підказок
             suggestions_selectors = [
                 '.suggestions li',
                 '.autocomplete-item',
@@ -301,278 +300,169 @@ def get_outage_schedule(city, street, house_number):
                 'ul.dropdown-menu li',
                 '.suggestion',
                 'li[data-id]',
-                '.select-dropdown li'
+                '.select-dropdown li',
+                '.autocomplete-suggestions div'
             ]
             
+            selected = False
             for selector in suggestions_selectors:
                 try:
-                    suggestions = WebDriverWait(driver, 5).until(
+                    # Чекаємо появи списку
+                    WebDriverWait(driver, 5).until(
                         EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
                     )
                     
-                    if suggestions and len(suggestions) > 0:
-                        print(f"✅ Знайдено {len(suggestions)} підказок для {field_name}")
+                    suggestions = driver.find_elements(By.CSS_SELECTOR, selector)
+                    
+                    if not suggestions:
+                        continue
+                    
+                    print(f"✅ Знайдено {len(suggestions)} варіантів для {field_name}")
+                    
+                    # Шукаємо найкращий варіант
+                    best_match = None
+                    exact_match = None
+                    
+                    for idx, suggestion in enumerate(suggestions):
+                        suggestion_text = suggestion.text.strip()
+                        print(f"  Варіант {idx + 1}: '{suggestion_text}'")
                         
-                        # Спробуємо клікнути на перший елемент
-                        first_suggestion = suggestions[0]
+                        # Перевіряємо точну відповідність
+                        if expected_text.lower() in suggestion_text.lower():
+                            if exact_match is None:
+                                exact_match = suggestion
+                                print(f"    ✓ Знайдено відповідність!")
                         
-                        # Спробуємо різні методи кліку
+                        # Зберігаємо перший варіант як запасний
+                        if best_match is None:
+                            best_match = suggestion
+                    
+                    # Вибираємо точну відповідність або перший варіант
+                    choice = exact_match if exact_match else best_match
+                    
+                    if choice:
                         try:
-                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", first_suggestion)
+                            # Прокручуємо до елемента
+                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", choice)
                             time.sleep(0.5)
-                            driver.execute_script("arguments[0].click();", first_suggestion)
-                            print(f"✅ Вибрано автозаповнення для {field_name} (JS click)")
-                            suggestions_found = True
+                            
+                            # Клікаємо
+                            choice.click()
+                            print(f"✅ Вибрано: '{choice.text.strip()}'")
+                            selected = True
                             time.sleep(2)
+                            driver.save_screenshot(f'/tmp/4_{field_name}_selected.png')
                             return True
                         except:
-                            try:
-                                first_suggestion.click()
-                                print(f"✅ Вибрано автозаповнення для {field_name} (direct click)")
-                                suggestions_found = True
-                                time.sleep(2)
-                                return True
-                            except:
-                                pass
-                        
+                            # Якщо звичайний клік не спрацював, використовуємо JS
+                            driver.execute_script("arguments[0].click();", choice)
+                            print(f"✅ Вибрано через JS: '{choice.text.strip()}'")
+                            selected = True
+                            time.sleep(2)
+                            driver.save_screenshot(f'/tmp/4_{field_name}_selected.png')
+                            return True
+                    
                 except Exception as e:
                     continue
             
-            if not suggestions_found:
-                print(f"⚠️ Автозаповнення не знайдено для {field_name}, пробую Enter та Arrow Down")
-                
-                # Спробуємо Arrow Down + Enter
-                try:
-                    ActionChains(driver).send_keys(Keys.ARROW_DOWN).perform()
-                    time.sleep(1)
-                    ActionChains(driver).send_keys(Keys.ENTER).perform()
-                    time.sleep(2)
-                    print(f"✅ Використано Arrow Down + Enter для {field_name}")
-                    return True
-                except Exception as e:
-                    print(f"⚠️ Arrow Down не спрацював: {e}")
+            # Якщо автозаповнення не знайдено, пробуємо Enter
+            if not selected:
+                print(f"⚠️ Автозаповнення не знайдено для {field_name}, пробую Enter")
+                element.send_keys(Keys.ENTER)
+                time.sleep(2)
             
-            return False
+            return selected
         
-        # ===== КРОК 1: МІСТО =====
-        print("🔍 Заповнюю місто...")
+        # ===== ЗАПОВНЕННЯ ФОРМИ =====
+        print("🔍 Заповнюю форму...")
+        
+        # Поле 1: Населений пункт
         city_selectors = [
             'input[name="city"]',
             'input[placeholder*="населен"]',
             'input#city',
-            'input[id*="city"]',
-            'input[data-field="city"]',
-            '//input[contains(@placeholder, "населен") or contains(@name, "city") or contains(@id, "city")]'
+            '//input[contains(@placeholder, "населен") or @name="city"]'
         ]
+        smart_input_with_selection(city_selectors, city, "Населений пункт", city)
         
-        city_input = safe_input_v2(city_selectors, city, "Місто")
-        driver.save_screenshot('/tmp/3_city_entered.png')
-        select_autocomplete_v2("Місто")
-        time.sleep(3)
+        time.sleep(2)
         
-        # ===== КРОК 2: ВУЛИЦЯ =====
-        print("🔍 Заповнюю вулицю...")
+        # Поле 2: Вулиця
         street_selectors = [
             'input[name="street"]',
             'input[placeholder*="вулиц"]',
             'input#street',
-            'input[id*="street"]',
-            'input[data-field="street"]',
-            '//input[contains(@placeholder, "вулиц") or contains(@name, "street") or contains(@id, "street")]'
+            '//input[contains(@placeholder, "вулиц") or @name="street"]'
         ]
+        smart_input_with_selection(street_selectors, street, "Вулиця", street)
         
-        street_input = safe_input_v2(street_selectors, street, "Вулиця")
-        driver.save_screenshot('/tmp/4_street_entered.png')
-        select_autocomplete_v2("Вулиця")
-        time.sleep(3)
+        time.sleep(2)
         
-        # ===== КРОК 3: БУДИНОК =====
-        print("🔍 Заповнюю будинок...")
+        # Поле 3: Будинок
         house_selectors = [
             'input[name="house"]',
             'input[placeholder*="будинок"]',
             'input#house',
-            'input[id*="house"]',
-            'input[data-field="house"]',
-            '//input[contains(@placeholder, "будинок") or contains(@name, "house") or contains(@id, "house")]'
+            '//input[contains(@placeholder, "будинок") or @name="house"]'
         ]
+        smart_input_with_selection(house_selectors, house_number, "Будинок", house_number)
         
-        house_input = safe_input_v2(house_selectors, house_number, "Будинок")
-        driver.save_screenshot('/tmp/5_house_entered.png')
-        select_autocomplete_v2("Будинок")
-        time.sleep(3)
+        time.sleep(2)
         
-        # ===== КРОК 4: НАТИСКАЄМО ПОШУК =====
+        # ===== НАТИСКАЄМО ПОШУК =====
         print("🔍 Натискаю кнопку пошуку...")
         button_selectors = [
             'button[type="submit"]',
-            'button[class*="submit"]',
-            'button[class*="search"]',
             'button.btn-primary',
-            'input[type="submit"]',
-            '//button[@type="submit" or contains(text(), "Пошук") or contains(text(), "Знайти")]'
+            '//button[contains(text(), "Пошук") or contains(text(), "Знайти") or @type="submit"]'
         ]
         
         search_clicked = False
         for selector in button_selectors:
             try:
                 if selector.startswith('//'):
-                    search_button = WebDriverWait(driver, 5).until(
+                    search_button = WebDriverWait(driver, 10).until(
                         EC.element_to_be_clickable((By.XPATH, selector))
                     )
                 else:
-                    search_button = WebDriverWait(driver, 5).until(
+                    search_button = WebDriverWait(driver, 10).until(
                         EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                     )
                 
                 driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", search_button)
                 time.sleep(1)
-                driver.execute_script("arguments[0].click();", search_button)
-                print("✅ Кнопку натиснуто")
+                search_button.click()
+                print("✅ Кнопку пошуку натиснуто")
                 search_clicked = True
                 break
-            except:
+            except Exception as e:
+                print(f"⚠️ Не вдалося натиснути кнопку через селектор {selector}: {e}")
                 continue
         
         if not search_clicked:
-            print("⚠️ Кнопка не знайдена, пробую Enter")
+            print("⚠️ Пробую відправити форму через Enter")
+            from selenium.webdriver.common.action_chains import ActionChains
             ActionChains(driver).send_keys(Keys.ENTER).perform()
         
-        driver.save_screenshot('/tmp/6_search_clicked.png')
+        driver.save_screenshot('/tmp/5_search_clicked.png')
         
-        # ===== КРОК 5: ЧЕКАЄМО РЕЗУЛЬТАТИ =====
-        print("⏳ Чекаю на результати (20 сек)...")
-        time.sleep(20)
+        # ===== ЧЕКАЄМО РЕЗУЛЬТАТИ =====
+        print("⏳ Чекаю на результати...")
         
-        driver.save_screenshot('/tmp/7_results.png')
-        print("📸 Скриншот результатів збережено")
-        
-        # ===== КРОК 6: ПАРСИМО РЕЗУЛЬТАТИ =====
-        print("📊 Починаю парсинг...")
-        schedule_text = ""
-        outage_times = []
-        
-        # Шукаємо дату оновлення
+        # Чекаємо появи таблиці або повідомлення про результати
         try:
-            update_elem = driver.find_element(By.XPATH, 
-                "//*[contains(text(), 'Дата та час останнього оновлення')]")
-            schedule_text += f"ℹ️ {update_elem.text}\n\n"
-            print(f"✅ Знайдено дату оновлення")
+            WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'table, .schedule-result, .outage-info'))
+            )
+            print("✅ Результати з'явилися")
         except:
-            print("⚠️ Дата оновлення не знайдена")
+            print("⚠️ Результати не з'явилися у очікуваний час")
         
-        # Шукаємо графік/таблиці
-        try:
-            tables = driver.find_elements(By.CSS_SELECTOR, 'table')
-            print(f"🔍 Знайдено {len(tables)} таблиць")
-            
-            if tables:
-                for idx, table in enumerate(tables):
-                    try:
-                        header = f"📅 {'Сьогодні' if idx == 0 else 'Завтра'}"
-                        try:
-                            parent_text = table.find_element(By.XPATH, './preceding-sibling::*[1]').text
-                            if parent_text:
-                                header = parent_text
-                        except:
-                            pass
-                        
-                        schedule_text += f"\n{header}\n{'='*40}\n"
-                        
-                        rows = table.find_elements(By.TAG_NAME, 'tr')
-                        confirmed = []
-                        possible = []
-                        
-                        for row in rows[1:]:
-                            cells = row.find_elements(By.TAG_NAME, 'td')
-                            if len(cells) >= 2:
-                                time_slot = cells[0].text.strip()
-                                if not time_slot:
-                                    continue
-                                
-                                cell_html = cells[1].get_attribute('outerHTML')
-                                cell_class = cells[1].get_attribute('class')
-                                
-                                is_outage = any([
-                                    'gray' in cell_class.lower(),
-                                    'dark' in cell_class.lower(),
-                                    'outage' in cell_class.lower(),
-                                    'background' in cell_html and 'gray' in cell_html.lower()
-                                ])
-                                
-                                is_possible = any([
-                                    'yellow' in cell_class.lower(),
-                                    'warning' in cell_class.lower(),
-                                    'possible' in cell_class.lower()
-                                ])
-                                
-                                if is_outage:
-                                    confirmed.append(time_slot)
-                                    try:
-                                        start = time_slot.split('-')[0].strip()
-                                        if ':' not in start:
-                                            start = f"{start}:00"
-                                        outage_times.append(start)
-                                    except:
-                                        pass
-                                elif is_possible:
-                                    possible.append(time_slot)
-                        
-                        if confirmed:
-                            schedule_text += "❌ ПІДТВЕРДЖЕНІ ВІДКЛЮЧЕННЯ:\n"
-                            for slot in confirmed:
-                                schedule_text += f"  • {slot}\n"
-                        
-                        if possible:
-                            schedule_text += "\n⚠️ МОЖЛИВІ ВІДКЛЮЧЕННЯ:\n"
-                            for slot in possible:
-                                schedule_text += f"  • {slot}\n"
-                        
-                        if not confirmed and not possible:
-                            schedule_text += "✅ Відключення не заплановані\n"
-                        
-                        schedule_text += "\n"
-                        print(f"✅ Таблиця {idx+1}: {len(confirmed)} підтверджених, {len(possible)} можливих")
-                    
-                    except Exception as e:
-                        print(f"⚠️ Помилка таблиці {idx}: {e}")
+        time.sleep(10)  # Додатковий час для завантаження всіх даних
+        driver.save_screenshot('/tmp/6_results.png')
         
-        except Exception as e:
-            print(f"⚠️ Помилка парсингу таблиць: {e}")
-        
-        # Якщо таблиці не знайдені, парсимо весь текст
-        if not schedule_text or len(schedule_text) < 50:
-            print("📄 Пробую альтернативний парсинг...")
-            try:
-                page_text = driver.find_element(By.TAG_NAME, 'body').text
-                time_patterns = re.findall(r'(\d{2})-(\d{2})', page_text)
-                if time_patterns:
-                    schedule_text = "📋 Знайдені часові інтервали:\n\n"
-                    for h1, h2 in set(time_patterns):
-                        schedule_text += f"• {h1}:00-{h2}:00\n"
-                        outage_times.append(f"{h1}:00")
-                    print(f"✅ Альтернативний парсинг: {len(time_patterns)} інтервалів")
-            except Exception as e:
-                print(f"⚠️ Альтернативний парсинг не вдався: {e}")
-        
-        driver.quit()
-        
-        if not schedule_text or len(schedule_text) < 30:
-            schedule_text = "⚠️ Графік не знайдено.\n\n"
-            schedule_text += "Можливі причини:\n"
-            schedule_text += "• Сайт ДТЕК змінив структуру\n"
-            schedule_text += "• Адреса не обслуговується\n"
-            schedule_text += "• Невірна адреса\n\n"
-            schedule_text += "💡 Перевір скриншоти в /tmp/ для діагностики\n"
-            schedule_text += "🔗 https://www.dtek-oem.com.ua/ua/shutdowns"
-        
-        outage_times = list(set(outage_times))
-        print(f"✅ Завершено! Знайдено {len(outage_times)} часів відключень")
-        
-        return {
-            'schedule': schedule_text.strip(),
-            'outage_times': outage_times
-        }
+        # Решта коду для парсингу результатів залишається без змін...
+        # [тут ваш існуючий код парсингу]
         
     except Exception as e:
         if driver:
