@@ -43,11 +43,9 @@ class DTEKParser:
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
-        try:
-            chrome_options.binary_location = '/usr/bin/chromium'
-            self.driver = webdriver.Chrome(options=chrome_options)
-        except:
-            self.driver = webdriver.Chrome(options=chrome_options)
+        chrome_options.binary_location = '/usr/bin/chromium'
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        self.driver = webdriver.Chrome(options=chrome_options)
             
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         self.driver.set_page_load_timeout(60)
