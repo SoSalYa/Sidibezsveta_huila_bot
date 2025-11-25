@@ -1,13 +1,12 @@
 services:
+  # Головний бот + Flask панель
   - type: web
     name: power-outage-bot
     runtime: python
     region: frankfurt
     plan: free
-
     buildCommand: pip install -r requirements.txt
     startCommand: python Bot.py
-
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.7
@@ -19,7 +18,5 @@ services:
         sync: false
       - key: FLASK_SECRET_KEY
         generateValue: true
-
-    aptPackages:
-      - chromium
-      - chromium-driver
+      - key: DTEK_API_URL
+        value: https://your-api-service.onrender.com  # Замінити після створення API сервісу
