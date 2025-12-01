@@ -87,7 +87,7 @@ class DiscordLogHandler(logging.Handler):
 
 # ============ БАЗА ДАНИХ ============
 async def init_db():
-    """Ініціалізація пулу з'єднань"""
+    """Ініціалізація пулу з'єднань та міграція БД"""
     global db_pool
     if db_pool:
         return db_pool
@@ -102,6 +102,7 @@ async def init_db():
         )
         
         async with db_pool.acquire() as conn:
+            # Створюємо таблицю якщо не існує
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     id SERIAL PRIMARY KEY,
@@ -111,17 +112,68 @@ async def init_db():
                     house TEXT NOT NULL,
                     last_hash TEXT,
                     last_checked TIMESTAMP DEFAULT now(),
-                    created_at TIMESTAMP DEFAULT now(),
-                    error_count INT DEFAULT 0,
-                    UNIQUE(discord_user_id, city, street, house)
+                    created_at TIMESTAMP DEFAULT now()
                 );
+            """)
+            
+            # Міграція: додаємо error_count якщо не існує
+            column_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name='subscriptions' AND column_name='error_count'
+                );
+            """)
+            
+            if not column_exists:
+                logger.info("Виконується міграція: додавання error_count...")
+                await conn.execute("""
+                    ALTER TABLE subscriptions 
+                    ADD COLUMN error_count INT DEFAULT 0;
+                """)
+                logger.info("Міграція error_count завершена")
+            
+            # Міграція: додаємо UNIQUE constraint якщо не існує
+            constraint_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_constraint 
+                    WHERE conname='subscriptions_discord_user_id_city_street_house_key'
+                );
+            """)
+            
+            if not constraint_exists:
+                logger.info("Виконується міграція: додавання UNIQUE constraint...")
+                try:
+                    # Спочатку видаляємо дублікати
+                    await conn.execute("""
+                        DELETE FROM subscriptions a USING subscriptions b
+                        WHERE a.id > b.id 
+                        AND a.discord_user_id = b.discord_user_id
+                        AND a.city = b.city
+                        AND a.street = b.street
+                        AND a.house = b.house;
+                    """)
+                    
+                    # Додаємо constraint
+                    await conn.execute("""
+                        ALTER TABLE subscriptions 
+                        ADD CONSTRAINT subscriptions_discord_user_id_city_street_house_key 
+                        UNIQUE(discord_user_id, city, street, house);
+                    """)
+                    logger.info("Міграція UNIQUE constraint завершена")
+                except Exception as e:
+                    logger.warning(f"Не вдалося додати UNIQUE constraint: {e}")
+            
+            # Створюємо індекси
+            await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_sub_last_checked 
                     ON subscriptions(last_checked) WHERE error_count < 5;
+            """)
+            await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_sub_user 
                     ON subscriptions(discord_user_id);
             """)
         
-        logger.info("База даних ініціалізована")
+        logger.info("База даних ініціалізована успішно")
         return db_pool
     except Exception as e:
         logger.exception("Помилка ініціалізації БД")
@@ -798,3 +850,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Програму зупинено користувачем")
+        
