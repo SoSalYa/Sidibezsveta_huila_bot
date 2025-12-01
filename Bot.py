@@ -61,21 +61,26 @@ tree = app_commands.CommandTree(client)
 # Helper: send log message to configured channel
 # -----------------------
 async def send_log_message(text: str):
-    """Відправити лог в заданий канал. Нічого більше не робимо публічно."""
+    """Надсилає лог у Discord, автоматично ділить на частини по 1900 символів."""
     try:
         if not client.is_ready():
             return
-        # отримуємо канал
-        try:
-            channel = client.get_channel(LOG_CHANNEL_ID)
-            if channel is None:
-                channel = await client.fetch_channel(LOG_CHANNEL_ID)
-            if channel:
-                await channel.send(f"📝 `{datetime.utcnow().isoformat()} UTC` — {text}")
-        except Exception as e:
-            logger.exception("Не вдалося надіслати лог у канал: %s", e)
-    except Exception:
-        pass
+
+        max_len = 1900
+        timestamp = f"📝 `{datetime.utcnow().isoformat()} UTC`\n"
+        full_text = timestamp + text
+
+        # Ріжемо на шматки
+        chunks = [full_text[i:i+max_len] for i in range(0, len(full_text), max_len)]
+
+        # Надсилаємо всі частини по черзі
+        channel = client.get_channel(LOG_CHANNEL_ID) or await client.fetch_channel(LOG_CHANNEL_ID)
+
+        for part in chunks:
+            await channel.send(part)
+
+    except Exception as e:
+        logging.error("Не вдалося надіслати лог у канал: %s", e)
 
 class DiscordLogHandler(logging.Handler):
     def emit(self, record):
