@@ -1,13 +1,17 @@
-#!/bin/bash
-# Запуск API в фоні
+#!/usr/bin/env bash
+set -euo pipefail
+
+# start keepalive server in background
 python dtek_api.py &
 API_PID=$!
+echo "Started dtek_api.py (pid=$API_PID)"
 
-# Трохи почекати поки API запуститься
-sleep 5
+# trap to kill background server when script exits
+_cleanup() {
+  echo "Stopping background api (pid=$API_PID)..."
+  kill "$API_PID" 2>/dev/null || true
+}
+trap _cleanup EXIT
 
-# Запуск основного бота
-python Bot.py
-
-# При зупинці бота - зупинити і API
-kill $API_PID
+# run the bot (this process holds the container)
+python main.py
