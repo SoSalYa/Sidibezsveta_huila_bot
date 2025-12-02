@@ -318,21 +318,35 @@ class PlaywrightManager:
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",  # Обхід детекції
                     "--disable-gpu",
                     "--disable-software-rasterizer",
                     "--disable-extensions"
                 ]
             )
             self._context = await self._browser.new_context(
-                viewport={"width": 800, "height": 600},
+                viewport={"width": 1280, "height": 720},  # Більше для реалістичності
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                locale="uk-UA",
+                timezone_id="Europe/Kyiv",
                 java_script_enabled=True,
-                ignore_https_errors=True
+                ignore_https_errors=True,
+                extra_http_headers={
+                    "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7"
+                }
             )
+            
+            # Приховуємо що це автоматизація
+            await self._context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
             
             # Блокуємо непотрібні ресурси
             async def block_resources(route):
                 req = route.request
-                if req.resource_type in ("image", "media", "font", "stylesheet"):
+                if req.resource_type in ("image", "media", "font"):
                     await route.abort()
                 elif any(x in req.url for x in ["analytics", "gtm", "facebook", "doubleclick"]):
                     await route.abort()
@@ -340,7 +354,7 @@ class PlaywrightManager:
                     await route.continue_()
             
             await self._context.route("**/*", block_resources)
-            logger.info("Браузер запущено")
+            logger.info("Браузер запущено з anti-detection")
     
     @asynccontextmanager
     async def get_page(self):
@@ -377,182 +391,178 @@ async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
         async with pw_manager.get_page() as page:
             logger.debug(f"Завантаження сторінки для: {city}, {street}, {house}")
             
-            await page.goto("https://www.dtek-krem.com.ua/ua/shutdowns", timeout=PAGE_TIMEOUT)
-            await asyncio.sleep(0.5)  # Даємо сторінці завантажитись
+            await page.goto("https://www.dtek-krem.com.ua/ua/shutdowns", 
+                          wait_until="domcontentloaded", 
+                          timeout=PAGE_TIMEOUT)
+            
+            # Чекаємо поки JS завантажиться
+            await asyncio.sleep(1.0)
+            
+            # Перевіряємо чи форма доступна
+            city_input = await page.query_selector(CITY_SEL)
+            if not city_input:
+                logger.error("Форма не знайдена на сторінці!")
+                return None
             
             # ===== МІСТО =====
-            # Очищуємо поле (може бути попереднє значення)
-            await page.fill(CITY_SEL, "")
+            logger.debug(f"Заповнення міста: {city}")
+            await page.click(CITY_SEL)  # Фокус
             await asyncio.sleep(0.2)
             
-            # Вводимо місто посимвольно (імітуємо друкування)
-            await page.type(CITY_SEL, city, delay=50)
-            await asyncio.sleep(0.5)
+            # Очищення
+            await page.evaluate(f'document.querySelector("{CITY_SEL}").value = ""')
+            await asyncio.sleep(0.2)
             
-            # Чекаємо на автокомпліт
+            # Введення посимвольно
+            await page.type(CITY_SEL, city, delay=80)
+            await asyncio.sleep(0.8)
+            
+            # Спроба 1: Автокомпліт
+            city_selected = False
             try:
-                await page.wait_for_selector(AUTOCOMPLETE_ITEM, state="visible", timeout=2000)
-                await asyncio.sleep(0.3)  # Додаткова затримка для стабільності
-                
+                await page.wait_for_selector(AUTOCOMPLETE_ITEM, state="visible", timeout=2500)
                 items = await page.query_selector_all(AUTOCOMPLETE_ITEM)
                 
                 if items:
-                    # Логуємо всі варіанти
-                    for idx, item in enumerate(items):
+                    logger.debug(f"Автокомпліт міста: знайдено {len(items)} варіантів")
+                    
+                    for idx, item in enumerate(items[:5]):
                         text = (await item.inner_text()).strip()
-                        logger.debug(f"  Варіант міста #{idx}: {text}")
+                        logger.debug(f"  [{idx}] {text}")
                     
-                    # Шукаємо найкращий збіг
-                    best_match = None
-                    city_lower = city.lower()
-                    
-                    for item in items:
-                        text = (await item.inner_text()).strip()
-                        text_lower = text.lower()
-                        
-                        # Точний збіг
-                        if text_lower == city_lower:
-                            best_match = item
-                            logger.debug(f"✓ Точний збіг міста: {text}")
-                            break
-                        
-                        # Збіг початку
-                        if text_lower.startswith(city_lower):
-                            best_match = item
-                            logger.debug(f"✓ Збіг початку міста: {text}")
-                            break
-                        
-                        # Містить введений текст
-                        if city_lower in text_lower:
-                            best_match = item
-                            logger.debug(f"~ Часткове збіг міста: {text}")
-                    
-                    if best_match:
-                        await best_match.click()
-                        await asyncio.sleep(0.3)
-                    else:
-                        # Якщо нема збігів - кликаємо перший
-                        first_text = (await items[0].inner_text()).strip()
-                        await items[0].click()
-                        logger.debug(f"→ Обрано перше місто: {first_text}")
-                        await asyncio.sleep(0.3)
-                else:
-                    logger.warning(f"Автокомпліт з'явився але пустий для міста: {city}")
+                    # Кликаємо на перший
+                    first_text = (await items[0].inner_text()).strip()
+                    await items[0].click()
+                    logger.debug(f"✓ Обрано місто: {first_text}")
+                    city_selected = True
+                    await asyncio.sleep(0.4)
             
             except PWTimeout:
-                logger.warning(f"Автокомпліт міста не з'явився за 2с: {city}")
-                # Спробуємо натиснути Enter
+                logger.debug("Автокомпліт міста не з'явився, спробуємо Enter")
+            
+            # Спроба 2: Натискання Enter якщо автокомпліт не спрацював
+            if not city_selected:
                 await page.press(CITY_SEL, "Enter")
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
+                logger.debug("Натиснуто Enter для міста")
             
             # ===== ВУЛИЦЯ =====
-            await page.fill(STREET_SEL, "")
+            logger.debug(f"Заповнення вулиці: {street}")
+            
+            # Перевіряємо чи поле вулиці активне
+            await page.wait_for_selector(STREET_SEL, state="visible", timeout=3000)
+            await page.click(STREET_SEL)
             await asyncio.sleep(0.2)
             
-            # Вводимо вулицю посимвольно
-            await page.type(STREET_SEL, street, delay=50)
-            await asyncio.sleep(0.5)
+            # Очищення
+            await page.evaluate(f'document.querySelector("{STREET_SEL}").value = ""')
+            await asyncio.sleep(0.2)
             
+            # Введення
+            await page.type(STREET_SEL, street, delay=80)
+            await asyncio.sleep(0.8)
+            
+            # Спроба 1: Автокомпліт
+            street_selected = False
             try:
-                await page.wait_for_selector(AUTOCOMPLETE_ITEM, state="visible", timeout=2000)
-                await asyncio.sleep(0.3)
-                
+                await page.wait_for_selector(AUTOCOMPLETE_ITEM, state="visible", timeout=2500)
                 items = await page.query_selector_all(AUTOCOMPLETE_ITEM)
                 
                 if items:
-                    # Логуємо варіанти
-                    for idx, item in enumerate(items):
+                    logger.debug(f"Автокомпліт вулиці: знайдено {len(items)} варіантів")
+                    
+                    for idx, item in enumerate(items[:5]):
                         text = (await item.inner_text()).strip()
-                        logger.debug(f"  Варіант вулиці #{idx}: {text}")
+                        logger.debug(f"  [{idx}] {text}")
                     
-                    # Шукаємо найкращий збіг
-                    best_match = None
-                    street_lower = street.lower()
-                    
-                    for item in items:
-                        text = (await item.inner_text()).strip()
-                        text_lower = text.lower()
-                        
-                        if text_lower == street_lower or text_lower.startswith(street_lower):
-                            best_match = item
-                            logger.debug(f"✓ Збіг вулиці: {text}")
-                            break
-                        
-                        if street_lower in text_lower:
-                            best_match = item
-                            logger.debug(f"~ Часткове збіг вулиці: {text}")
-                    
-                    if best_match:
-                        await best_match.click()
-                    else:
-                        first_text = (await items[0].inner_text()).strip()
-                        await items[0].click()
-                        logger.debug(f"→ Обрано першу вулицю: {first_text}")
-                    
-                    await asyncio.sleep(0.3)
+                    first_text = (await items[0].inner_text()).strip()
+                    await items[0].click()
+                    logger.debug(f"✓ Обрано вулицю: {first_text}")
+                    street_selected = True
+                    await asyncio.sleep(0.4)
             
             except PWTimeout:
-                logger.warning(f"Автокомпліт вулиці не з'явився: {street}")
+                logger.debug("Автокомпліт вулиці не з'явився")
+            
+            # Спроба 2: Enter
+            if not street_selected:
                 await page.press(STREET_SEL, "Enter")
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
+                logger.debug("Натиснуто Enter для вулиці")
+            
+            # Спроба 3: Перевіряємо чи є помилка валідації
+            error_elem = await page.query_selector(".form__input.error, .error-message")
+            if error_elem:
+                error_text = await error_elem.inner_text()
+                logger.warning(f"Помилка валідації вулиці: {error_text}")
+                return None
             
             # ===== БУДИНОК =====
-            await page.fill(HOUSE_SEL, "")
+            logger.debug(f"Заповнення будинку: {house}")
+            
+            await page.wait_for_selector(HOUSE_SEL, state="visible", timeout=3000)
+            await page.click(HOUSE_SEL)
             await asyncio.sleep(0.2)
-            await page.type(HOUSE_SEL, house, delay=30)
+            
+            await page.evaluate(f'document.querySelector("{HOUSE_SEL}").value = ""')
+            await asyncio.sleep(0.2)
+            
+            await page.type(HOUSE_SEL, house, delay=60)
             await asyncio.sleep(0.5)
             
-            # Натискаємо Enter або чекаємо результат
+            # Натискаємо Enter або кнопку пошуку
             await page.press(HOUSE_SEL, "Enter")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.7)
+            
+            # Альтернативно: шукаємо кнопку submit
+            submit_btn = await page.query_selector("button[type='submit'], .form__submit, .btn-submit")
+            if submit_btn:
+                await submit_btn.click()
+                logger.debug("Натиснуто кнопку пошуку")
+                await asyncio.sleep(0.5)
             
             # ===== ЧЕКАЄМО РЕЗУЛЬТАТ =====
+            logger.debug("Очікування результату...")
+            
             try:
-                await page.wait_for_selector(RESULT_SELECTOR, state="visible", timeout=RESULT_TIMEOUT)
-                await asyncio.sleep(0.3)  # Даємо час на повне завантаження
+                await page.wait_for_selector(RESULT_SELECTOR, state="visible", timeout=10000)
+                await asyncio.sleep(0.5)
                 
                 html = await page.inner_html(RESULT_SELECTOR)
                 
-                # Перевіряємо чи не пустий результат
+                # Валідація
                 if len(html.strip()) < 100:
                     logger.warning(f"Результат занадто короткий ({len(html)} символів)")
+                    
+                    # Дивимось що на сторінці
+                    body_text = await page.evaluate("document.body.innerText")
+                    logger.debug(f"Текст на сторінці (перші 200 символів): {body_text[:200]}")
                     return None
                 
-                logger.info(f"✓ Отримано графік для {city}, {street}, {house} (HTML: {len(html)} символів)")
+                logger.info(f"✓ Отримано графік: {city}, {street}, {house} ({len(html)} символів)")
                 return html
             
             except PWTimeout:
-                # Перевіряємо чи є повідомлення про помилку
-                error_selectors = [
-                    ".error-message", 
-                    ".alert-danger", 
-                    ".no-results",
-                    "text=не знайдено",
-                    "text=помилка"
-                ]
+                logger.warning(f"Результат не з'явився за 10с: {city}, {street}, {house}")
                 
-                for sel in error_selectors:
-                    error_elem = await page.query_selector(sel)
-                    if error_elem:
-                        error_text = await error_elem.inner_text()
-                        logger.warning(f"Сайт повернув помилку: {error_text}")
-                        return None
+                # Діагностика
+                body_text = await page.evaluate("document.body.innerText")
+                logger.debug(f"Текст на сторінці: {body_text[:300]}")
                 
-                # Робимо скріншот для діагностики
-                try:
-                    screenshot = await page.screenshot()
-                    logger.debug(f"Скріншот збережено (розмір: {len(screenshot)} байт)")
-                except:
-                    pass
+                # Перевіряємо помилки
+                for selector in [".error", ".alert", "text=не знайдено", "text=помилка"]:
+                    elem = await page.query_selector(selector)
+                    if elem:
+                        text = await elem.inner_text()
+                        logger.warning(f"Знайдено помилку на сторінці: {text}")
                 
-                logger.warning(f"Результат не з'явився за {RESULT_TIMEOUT}мс: {city}, {street}, {house}")
                 return None
     
-    except PWTimeout as e:
-        logger.warning(f"Таймаут при отриманні графіку: {city}, {street}, {house}")
+    except PWTimeout:
+        logger.warning(f"Таймаут при завантаженні: {city}, {street}, {house}")
         return None
     except Exception as e:
-        logger.error(f"Помилка fetch_schedule_html ({city}, {street}, {house}): {e}", exc_info=True)
+        logger.error(f"Помилка fetch_schedule_html: {e}", exc_info=True)
         return None
 
 async def html_to_png(html: str) -> bytes | None:
