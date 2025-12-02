@@ -22,10 +22,10 @@ PLAYWRIGHT_USER_DATA = os.getenv("PLAYWRIGHT_USER_DATA", "/tmp/playwright_data")
 LOG_GUILD_ID = int(os.getenv("LOG_GUILD_ID", "1218472302975520839"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "1366717075271323749"))
 
-# Таймаути (менші для економії ресурсів)
-PAGE_TIMEOUT = 15000
-AUTOCOMPLETE_TIMEOUT = 1000
-RESULT_TIMEOUT = 8000
+# Таймаути (збільшені для повільного сайту)
+PAGE_TIMEOUT = 30000  # 30 секунд для завантаження сторінки
+AUTOCOMPLETE_TIMEOUT = 3000
+RESULT_TIMEOUT = 15000
 
 # Селектори
 CITY_SEL = "input#city.form__input"
@@ -386,184 +386,197 @@ class PlaywrightManager:
 pw_manager = PlaywrightManager()
 
 async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
-    """Отримує HTML графіку з сайту"""
-    try:
-        async with pw_manager.get_page() as page:
-            logger.debug(f"Завантаження сторінки для: {city}, {street}, {house}")
-            
-            await page.goto("https://www.dtek-krem.com.ua/ua/shutdowns", 
-                          wait_until="domcontentloaded", 
-                          timeout=PAGE_TIMEOUT)
-            
-            # Чекаємо поки JS завантажиться
-            await asyncio.sleep(1.0)
-            
-            # Перевіряємо чи форма доступна
-            city_input = await page.query_selector(CITY_SEL)
-            if not city_input:
-                logger.error("Форма не знайдена на сторінці!")
-                return None
-            
-            # ===== МІСТО =====
-            logger.debug(f"Заповнення міста: {city}")
-            await page.click(CITY_SEL)  # Фокус
-            await asyncio.sleep(0.2)
-            
-            # Очищення
-            await page.evaluate(f'document.querySelector("{CITY_SEL}").value = ""')
-            await asyncio.sleep(0.2)
-            
-            # Введення посимвольно
-            await page.type(CITY_SEL, city, delay=80)
-            await asyncio.sleep(0.8)
-            
-            # Спроба 1: Автокомпліт
-            city_selected = False
-            try:
-                await page.wait_for_selector(AUTOCOMPLETE_ITEM, state="visible", timeout=2500)
-                items = await page.query_selector_all(AUTOCOMPLETE_ITEM)
+    """Отримує HTML графіку з сайту з retry логікою"""
+    max_retries = 2
+    
+    for attempt in range(max_retries):
+        try:
+            async with pw_manager.get_page() as page:
+                if attempt > 0:
+                    logger.info(f"Спроба #{attempt + 1} для {city}, {street}, {house}")
+                    await asyncio.sleep(3)  # Пауза між спробами
                 
-                if items:
-                    logger.debug(f"Автокомпліт міста: знайдено {len(items)} варіантів")
-                    
-                    for idx, item in enumerate(items[:5]):
-                        text = (await item.inner_text()).strip()
-                        logger.debug(f"  [{idx}] {text}")
-                    
-                    # Кликаємо на перший
-                    first_text = (await items[0].inner_text()).strip()
-                    await items[0].click()
-                    logger.debug(f"✓ Обрано місто: {first_text}")
-                    city_selected = True
-                    await asyncio.sleep(0.4)
-            
-            except PWTimeout:
-                logger.debug("Автокомпліт міста не з'явився, спробуємо Enter")
-            
-            # Спроба 2: Натискання Enter якщо автокомпліт не спрацював
-            if not city_selected:
-                await page.press(CITY_SEL, "Enter")
-                await asyncio.sleep(0.5)
-                logger.debug("Натиснуто Enter для міста")
-            
-            # ===== ВУЛИЦЯ =====
-            logger.debug(f"Заповнення вулиці: {street}")
-            
-            # Перевіряємо чи поле вулиці активне
-            await page.wait_for_selector(STREET_SEL, state="visible", timeout=3000)
-            await page.click(STREET_SEL)
-            await asyncio.sleep(0.2)
-            
-            # Очищення
-            await page.evaluate(f'document.querySelector("{STREET_SEL}").value = ""')
-            await asyncio.sleep(0.2)
-            
-            # Введення
-            await page.type(STREET_SEL, street, delay=80)
-            await asyncio.sleep(0.8)
-            
-            # Спроба 1: Автокомпліт
-            street_selected = False
-            try:
-                await page.wait_for_selector(AUTOCOMPLETE_ITEM, state="visible", timeout=2500)
-                items = await page.query_selector_all(AUTOCOMPLETE_ITEM)
+                logger.debug(f"Завантаження сторінки: {city}, {street}, {house}")
                 
-                if items:
-                    logger.debug(f"Автокомпліт вулиці: знайдено {len(items)} варіантів")
-                    
-                    for idx, item in enumerate(items[:5]):
-                        text = (await item.inner_text()).strip()
-                        logger.debug(f"  [{idx}] {text}")
-                    
-                    first_text = (await items[0].inner_text()).strip()
-                    await items[0].click()
-                    logger.debug(f"✓ Обрано вулицю: {first_text}")
-                    street_selected = True
-                    await asyncio.sleep(0.4)
-            
-            except PWTimeout:
-                logger.debug("Автокомпліт вулиці не з'явився")
-            
-            # Спроба 2: Enter
-            if not street_selected:
-                await page.press(STREET_SEL, "Enter")
-                await asyncio.sleep(0.5)
-                logger.debug("Натиснуто Enter для вулиці")
-            
-            # Спроба 3: Перевіряємо чи є помилка валідації
-            error_elem = await page.query_selector(".form__input.error, .error-message")
-            if error_elem:
-                error_text = await error_elem.inner_text()
-                logger.warning(f"Помилка валідації вулиці: {error_text}")
-                return None
-            
-            # ===== БУДИНОК =====
-            logger.debug(f"Заповнення будинку: {house}")
-            
-            await page.wait_for_selector(HOUSE_SEL, state="visible", timeout=3000)
-            await page.click(HOUSE_SEL)
-            await asyncio.sleep(0.2)
-            
-            await page.evaluate(f'document.querySelector("{HOUSE_SEL}").value = ""')
-            await asyncio.sleep(0.2)
-            
-            await page.type(HOUSE_SEL, house, delay=60)
-            await asyncio.sleep(0.5)
-            
-            # Натискаємо Enter або кнопку пошуку
-            await page.press(HOUSE_SEL, "Enter")
-            await asyncio.sleep(0.7)
-            
-            # Альтернативно: шукаємо кнопку submit
-            submit_btn = await page.query_selector("button[type='submit'], .form__submit, .btn-submit")
-            if submit_btn:
-                await submit_btn.click()
-                logger.debug("Натиснуто кнопку пошуку")
-                await asyncio.sleep(0.5)
-            
-            # ===== ЧЕКАЄМО РЕЗУЛЬТАТ =====
-            logger.debug("Очікування результату...")
-            
-            try:
-                await page.wait_for_selector(RESULT_SELECTOR, state="visible", timeout=10000)
-                await asyncio.sleep(0.5)
-                
-                html = await page.inner_html(RESULT_SELECTOR)
-                
-                # Валідація
-                if len(html.strip()) < 100:
-                    logger.warning(f"Результат занадто короткий ({len(html)} символів)")
-                    
-                    # Дивимось що на сторінці
-                    body_text = await page.evaluate("document.body.innerText")
-                    logger.debug(f"Текст на сторінці (перші 200 символів): {body_text[:200]}")
+                # Завантаження з retry
+                try:
+                    await page.goto("https://www.dtek-krem.com.ua/ua/shutdowns", 
+                                  wait_until="domcontentloaded", 
+                                  timeout=PAGE_TIMEOUT)
+                except PWTimeout:
+                    logger.warning(f"Таймаут завантаження сторінки (спроба {attempt + 1})")
+                    if attempt < max_retries - 1:
+                        continue
                     return None
                 
-                logger.info(f"✓ Отримано графік: {city}, {street}, {house} ({len(html)} символів)")
-                return html
-            
-            except PWTimeout:
-                logger.warning(f"Результат не з'явився за 10с: {city}, {street}, {house}")
+                # Чекаємо JS
+                await asyncio.sleep(1.5)
                 
-                # Діагностика
-                body_text = await page.evaluate("document.body.innerText")
-                logger.debug(f"Текст на сторінці: {body_text[:300]}")
+                # Перевірка форми
+                city_input = await page.query_selector(CITY_SEL)
+                if not city_input:
+                    logger.error("Форма не знайдена!")
+                    if attempt < max_retries - 1:
+                        continue
+                    return None
                 
-                # Перевіряємо помилки
-                for selector in [".error", ".alert", "text=не знайдено", "text=помилка"]:
-                    elem = await page.query_selector(selector)
-                    if elem:
-                        text = await elem.inner_text()
-                        logger.warning(f"Знайдено помилку на сторінці: {text}")
+                # ===== МІСТО =====
+                logger.debug(f"→ Місто: {city}")
+                await page.click(CITY_SEL, timeout=5000)
+                await asyncio.sleep(0.3)
                 
-                return None
+                # Очищення через JS (надійніше)
+                await page.evaluate(f'document.querySelector("{CITY_SEL}").value = ""')
+                await page.evaluate(f'document.querySelector("{CITY_SEL}").dispatchEvent(new Event("input", {{ bubbles: true }}))')
+                await asyncio.sleep(0.3)
+                
+                # Введення
+                for char in city:
+                    await page.type(CITY_SEL, char, delay=0)
+                    await asyncio.sleep(0.05)
+                
+                await asyncio.sleep(1.0)
+                
+                # Автокомпліт
+                city_ok = False
+                try:
+                    await page.wait_for_selector(AUTOCOMPLETE_ITEM, state="visible", timeout=3000)
+                    items = await page.query_selector_all(AUTOCOMPLETE_ITEM)
+                    
+                    if items and len(items) > 0:
+                        text = (await items[0].inner_text()).strip()
+                        logger.debug(f"  ✓ Обрано: {text}")
+                        await items[0].click()
+                        city_ok = True
+                        await asyncio.sleep(0.5)
+                except PWTimeout:
+                    logger.debug("  Автокомпліт міста таймаут")
+                
+                if not city_ok:
+                    await page.press(CITY_SEL, "Enter")
+                    await asyncio.sleep(0.5)
+                
+                # ===== ВУЛИЦЯ =====
+                logger.debug(f"→ Вулиця: {street}")
+                
+                try:
+                    await page.wait_for_selector(STREET_SEL, state="visible", timeout=5000)
+                except PWTimeout:
+                    logger.warning("Поле вулиці не стало доступним")
+                    if attempt < max_retries - 1:
+                        continue
+                    return None
+                
+                await page.click(STREET_SEL)
+                await asyncio.sleep(0.3)
+                
+                await page.evaluate(f'document.querySelector("{STREET_SEL}").value = ""')
+                await page.evaluate(f'document.querySelector("{STREET_SEL}").dispatchEvent(new Event("input", {{ bubbles: true }}))')
+                await asyncio.sleep(0.3)
+                
+                for char in street:
+                    await page.type(STREET_SEL, char, delay=0)
+                    await asyncio.sleep(0.05)
+                
+                await asyncio.sleep(1.0)
+                
+                street_ok = False
+                try:
+                    await page.wait_for_selector(AUTOCOMPLETE_ITEM, state="visible", timeout=3000)
+                    items = await page.query_selector_all(AUTOCOMPLETE_ITEM)
+                    
+                    if items and len(items) > 0:
+                        text = (await items[0].inner_text()).strip()
+                        logger.debug(f"  ✓ Обрано: {text}")
+                        await items[0].click()
+                        street_ok = True
+                        await asyncio.sleep(0.5)
+                except PWTimeout:
+                    logger.debug("  Автокомпліт вулиці таймаут")
+                
+                if not street_ok:
+                    await page.press(STREET_SEL, "Enter")
+                    await asyncio.sleep(0.5)
+                
+                # ===== БУДИНОК =====
+                logger.debug(f"→ Будинок: {house}")
+                
+                try:
+                    await page.wait_for_selector(HOUSE_SEL, state="visible", timeout=5000)
+                except PWTimeout:
+                    logger.warning("Поле будинку не стало доступним")
+                    if attempt < max_retries - 1:
+                        continue
+                    return None
+                
+                await page.click(HOUSE_SEL)
+                await asyncio.sleep(0.3)
+                
+                await page.evaluate(f'document.querySelector("{HOUSE_SEL}").value = ""')
+                await asyncio.sleep(0.2)
+                
+                await page.type(HOUSE_SEL, house, delay=50)
+                await asyncio.sleep(0.5)
+                
+                # Пошук кнопки submit
+                submit_btn = await page.query_selector("button[type='submit'], .btn-submit, button.form__submit")
+                if submit_btn:
+                    await submit_btn.click()
+                    logger.debug("  ✓ Клік на кнопку")
+                else:
+                    await page.press(HOUSE_SEL, "Enter")
+                    logger.debug("  ✓ Enter")
+                
+                await asyncio.sleep(1.0)
+                
+                # ===== РЕЗУЛЬТАТ =====
+                logger.debug("→ Очікування результату...")
+                
+                try:
+                    await page.wait_for_selector(RESULT_SELECTOR, state="visible", timeout=RESULT_TIMEOUT)
+                    await asyncio.sleep(0.7)
+                    
+                    html = await page.inner_html(RESULT_SELECTOR)
+                    
+                    if len(html.strip()) < 100:
+                        logger.warning(f"Результат малий: {len(html)} символів")
+                        if attempt < max_retries - 1:
+                            continue
+                        return None
+                    
+                    logger.info(f"✅ Успіх: {city}, {street}, {house} ({len(html)} б)")
+                    return html
+                
+                except PWTimeout:
+                    logger.warning(f"Результат не з'явився за {RESULT_TIMEOUT}мс")
+                    
+                    # Діагностика
+                    page_text = await page.evaluate("document.body.innerText")
+                    if "не знайдено" in page_text.lower() or "помилка" in page_text.lower():
+                        logger.warning(f"Сайт повідомив про помилку: {page_text[:200]}")
+                        return None
+                    
+                    if attempt < max_retries - 1:
+                        logger.info("Повторна спроба...")
+                        continue
+                    
+                    return None
+        
+        except PWTimeout:
+            logger.warning(f"Таймаут на спробі {attempt + 1}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3)
+                continue
+            return None
+        
+        except Exception as e:
+            logger.error(f"Помилка на спробі {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3)
+                continue
+            return None
     
-    except PWTimeout:
-        logger.warning(f"Таймаут при завантаженні: {city}, {street}, {house}")
-        return None
-    except Exception as e:
-        logger.error(f"Помилка fetch_schedule_html: {e}", exc_info=True)
-        return None
+    return None
 
 async def html_to_png(html: str) -> bytes | None:
     """Конвертує HTML в PNG"""
@@ -675,7 +688,7 @@ async def worker_loop():
                         await update_subscription_hash(sub["id"], current_hash)
                     
                     # Пауза між перевірками
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(5)  # 5 секунд між запитами
                 
                 except Exception as e:
                     logger.exception(f"Помилка при перевірці sub_id={sub['id']}: {e}")
