@@ -233,7 +233,7 @@ async def update_subscription_hash(sub_id: int, new_hash: str, success: bool = T
             await conn.execute("""
                 UPDATE subscriptions 
                 SET last_checked=now(), error_count=error_count+1
-                WHERE id=$2
+                WHERE id=$1
             """, sub_id)
 
 async def get_total_subscriptions():
@@ -375,54 +375,184 @@ async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
     """Отримує HTML графіку з сайту"""
     try:
         async with pw_manager.get_page() as page:
+            logger.debug(f"Завантаження сторінки для: {city}, {street}, {house}")
+            
             await page.goto("https://www.dtek-krem.com.ua/ua/shutdowns", timeout=PAGE_TIMEOUT)
+            await asyncio.sleep(0.5)  # Даємо сторінці завантажитись
             
-            # Місто
-            await page.fill(CITY_SEL, city)
+            # ===== МІСТО =====
+            # Очищуємо поле (може бути попереднє значення)
+            await page.fill(CITY_SEL, "")
             await asyncio.sleep(0.2)
             
+            # Вводимо місто посимвольно (імітуємо друкування)
+            await page.type(CITY_SEL, city, delay=50)
+            await asyncio.sleep(0.5)
+            
+            # Чекаємо на автокомпліт
             try:
-                await page.wait_for_selector(AUTOCOMPLETE_ITEM, timeout=AUTOCOMPLETE_TIMEOUT)
+                await page.wait_for_selector(AUTOCOMPLETE_ITEM, state="visible", timeout=2000)
+                await asyncio.sleep(0.3)  # Додаткова затримка для стабільності
+                
                 items = await page.query_selector_all(AUTOCOMPLETE_ITEM)
+                
                 if items:
-                    # Шукаємо точний збіг або кликаємо перший
+                    # Логуємо всі варіанти
+                    for idx, item in enumerate(items):
+                        text = (await item.inner_text()).strip()
+                        logger.debug(f"  Варіант міста #{idx}: {text}")
+                    
+                    # Шукаємо найкращий збіг
+                    best_match = None
+                    city_lower = city.lower()
+                    
                     for item in items:
-                        text = (await item.inner_text()).strip().lower()
-                        if city.lower() in text:
-                            await item.click()
+                        text = (await item.inner_text()).strip()
+                        text_lower = text.lower()
+                        
+                        # Точний збіг
+                        if text_lower == city_lower:
+                            best_match = item
+                            logger.debug(f"✓ Точний збіг міста: {text}")
                             break
+                        
+                        # Збіг початку
+                        if text_lower.startswith(city_lower):
+                            best_match = item
+                            logger.debug(f"✓ Збіг початку міста: {text}")
+                            break
+                        
+                        # Містить введений текст
+                        if city_lower in text_lower:
+                            best_match = item
+                            logger.debug(f"~ Часткове збіг міста: {text}")
+                    
+                    if best_match:
+                        await best_match.click()
+                        await asyncio.sleep(0.3)
                     else:
+                        # Якщо нема збігів - кликаємо перший
+                        first_text = (await items[0].inner_text()).strip()
                         await items[0].click()
-            except PWTimeout:
-                logger.debug(f"Автокомпліт міста не з'явився для {city}")
+                        logger.debug(f"→ Обрано перше місто: {first_text}")
+                        await asyncio.sleep(0.3)
+                else:
+                    logger.warning(f"Автокомпліт з'явився але пустий для міста: {city}")
             
-            # Вулиця
-            await page.fill(STREET_SEL, street)
+            except PWTimeout:
+                logger.warning(f"Автокомпліт міста не з'явився за 2с: {city}")
+                # Спробуємо натиснути Enter
+                await page.press(CITY_SEL, "Enter")
+                await asyncio.sleep(0.3)
+            
+            # ===== ВУЛИЦЯ =====
+            await page.fill(STREET_SEL, "")
             await asyncio.sleep(0.2)
             
+            # Вводимо вулицю посимвольно
+            await page.type(STREET_SEL, street, delay=50)
+            await asyncio.sleep(0.5)
+            
             try:
-                await page.wait_for_selector(AUTOCOMPLETE_ITEM, timeout=AUTOCOMPLETE_TIMEOUT)
+                await page.wait_for_selector(AUTOCOMPLETE_ITEM, state="visible", timeout=2000)
+                await asyncio.sleep(0.3)
+                
                 items = await page.query_selector_all(AUTOCOMPLETE_ITEM)
+                
                 if items:
-                    await items[0].click()
+                    # Логуємо варіанти
+                    for idx, item in enumerate(items):
+                        text = (await item.inner_text()).strip()
+                        logger.debug(f"  Варіант вулиці #{idx}: {text}")
+                    
+                    # Шукаємо найкращий збіг
+                    best_match = None
+                    street_lower = street.lower()
+                    
+                    for item in items:
+                        text = (await item.inner_text()).strip()
+                        text_lower = text.lower()
+                        
+                        if text_lower == street_lower or text_lower.startswith(street_lower):
+                            best_match = item
+                            logger.debug(f"✓ Збіг вулиці: {text}")
+                            break
+                        
+                        if street_lower in text_lower:
+                            best_match = item
+                            logger.debug(f"~ Часткове збіг вулиці: {text}")
+                    
+                    if best_match:
+                        await best_match.click()
+                    else:
+                        first_text = (await items[0].inner_text()).strip()
+                        await items[0].click()
+                        logger.debug(f"→ Обрано першу вулицю: {first_text}")
+                    
+                    await asyncio.sleep(0.3)
+            
             except PWTimeout:
-                logger.debug(f"Автокомпліт вулиці не з'явився для {street}")
+                logger.warning(f"Автокомпліт вулиці не з'явився: {street}")
+                await page.press(STREET_SEL, "Enter")
+                await asyncio.sleep(0.3)
             
-            # Будинок
-            await page.fill(HOUSE_SEL, house)
-            await asyncio.sleep(0.3)
+            # ===== БУДИНОК =====
+            await page.fill(HOUSE_SEL, "")
+            await asyncio.sleep(0.2)
+            await page.type(HOUSE_SEL, house, delay=30)
+            await asyncio.sleep(0.5)
             
-            # Чекаємо результат
-            await page.wait_for_selector(RESULT_SELECTOR, timeout=RESULT_TIMEOUT)
-            html = await page.inner_html(RESULT_SELECTOR)
+            # Натискаємо Enter або чекаємо результат
+            await page.press(HOUSE_SEL, "Enter")
+            await asyncio.sleep(0.5)
             
-            return html
+            # ===== ЧЕКАЄМО РЕЗУЛЬТАТ =====
+            try:
+                await page.wait_for_selector(RESULT_SELECTOR, state="visible", timeout=RESULT_TIMEOUT)
+                await asyncio.sleep(0.3)  # Даємо час на повне завантаження
+                
+                html = await page.inner_html(RESULT_SELECTOR)
+                
+                # Перевіряємо чи не пустий результат
+                if len(html.strip()) < 100:
+                    logger.warning(f"Результат занадто короткий ({len(html)} символів)")
+                    return None
+                
+                logger.info(f"✓ Отримано графік для {city}, {street}, {house} (HTML: {len(html)} символів)")
+                return html
+            
+            except PWTimeout:
+                # Перевіряємо чи є повідомлення про помилку
+                error_selectors = [
+                    ".error-message", 
+                    ".alert-danger", 
+                    ".no-results",
+                    "text=не знайдено",
+                    "text=помилка"
+                ]
+                
+                for sel in error_selectors:
+                    error_elem = await page.query_selector(sel)
+                    if error_elem:
+                        error_text = await error_elem.inner_text()
+                        logger.warning(f"Сайт повернув помилку: {error_text}")
+                        return None
+                
+                # Робимо скріншот для діагностики
+                try:
+                    screenshot = await page.screenshot()
+                    logger.debug(f"Скріншот збережено (розмір: {len(screenshot)} байт)")
+                except:
+                    pass
+                
+                logger.warning(f"Результат не з'явився за {RESULT_TIMEOUT}мс: {city}, {street}, {house}")
+                return None
     
-    except PWTimeout:
+    except PWTimeout as e:
         logger.warning(f"Таймаут при отриманні графіку: {city}, {street}, {house}")
         return None
     except Exception as e:
-        logger.exception(f"Помилка fetch_schedule_html: {e}")
+        logger.error(f"Помилка fetch_schedule_html ({city}, {street}, {house}): {e}", exc_info=True)
         return None
 
 async def html_to_png(html: str) -> bytes | None:
@@ -733,6 +863,16 @@ async def cmd_stats(interaction: discord.Interaction):
         async with db_pool.acquire() as conn:
             users = await conn.fetchval("SELECT COUNT(DISTINCT discord_user_id) FROM subscriptions")
             errors = await conn.fetchval("SELECT COUNT(*) FROM subscriptions WHERE error_count >= 5")
+            avg_errors = await conn.fetchval("SELECT AVG(error_count) FROM subscriptions WHERE error_count > 0")
+            
+            # Топ проблемних адрес
+            problem_subs = await conn.fetch("""
+                SELECT city, street, house, error_count 
+                FROM subscriptions 
+                WHERE error_count > 0 
+                ORDER BY error_count DESC 
+                LIMIT 5
+            """)
         
         stats_text = f"""
 **📊 Статистика бота**
@@ -740,9 +880,15 @@ async def cmd_stats(interaction: discord.Interaction):
 👥 Користувачів: **{users}**
 📍 Активних підписок: **{total}**
 ⚠️ Проблемних адрес: **{errors}**
+📉 Середня к-ть помилок: **{avg_errors:.1f if avg_errors else 0}**
 ⏱️ Інтервал перевірки: **{CHECK_INTERVAL_SECONDS // 60} хв**
 🔄 Адрес за раз: **{MAX_CHECKS_PER_TICK}**
-        """
+"""
+        
+        if problem_subs:
+            stats_text += "\n**🚨 Проблемні адреси:**\n"
+            for sub in problem_subs:
+                stats_text += f"• {sub['city']}, {sub['street']}, {sub['house']} (помилок: {sub['error_count']})\n"
         
         await interaction.followup.send(stats_text.strip(), ephemeral=True)
     
@@ -750,6 +896,56 @@ async def cmd_stats(interaction: discord.Interaction):
         logger.exception(f"Помилка команди /stats: {e}")
         await interaction.followup.send(
             "❌ Виникла помилка при отриманні статистики",
+            ephemeral=True
+        )
+
+@tree.command(name="reset_errors", description="Скинути лічильник помилок для адреси (тільки адмін)")
+@app_commands.describe(
+    city="Населений пункт",
+    street="Вулиця",
+    house="Будинок"
+)
+async def cmd_reset_errors(interaction: discord.Interaction, city: str, street: str, house: str):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "❌ Ця команда доступна тільки адміністраторам",
+            ephemeral=True
+        )
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        async with db_pool.acquire() as conn:
+            result = await conn.execute("""
+                UPDATE subscriptions 
+                SET error_count=0 
+                WHERE city=$1 AND street=$2 AND house=$3
+            """, city.strip(), street.strip(), house.strip())
+            
+            count = int(result.split()[-1])
+            
+            if count > 0:
+                await interaction.followup.send(
+                    f"✅ Скинуто лічильник помилок для **{count}** підписок:\n"
+                    f"📍 {city}, {street}, {house}",
+                    ephemeral=True
+                )
+                await send_log_message(
+                    f"🔧 Адмін {interaction.user} скинув помилки для:\n"
+                    f"📍 {city}, {street}, {house}",
+                    "INFO"
+                )
+            else:
+                await interaction.followup.send(
+                    f"ℹ️ Підписок з такою адресою не знайдено",
+                    ephemeral=True
+                )
+    
+    except Exception as e:
+        logger.exception(f"Помилка команди /reset_errors: {e}")
+        await interaction.followup.send(
+            "❌ Виникла помилка",
             ephemeral=True
         )
 
@@ -850,4 +1046,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Програму зупинено користувачем")
-        
