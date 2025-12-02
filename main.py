@@ -16,14 +16,14 @@ from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "300"))
-MAX_CHECKS_PER_TICK = int(os.getenv("MAX_CHECKS_PER_TICK", "3"))  # Знижено для free плану
+MAX_CHECKS_PER_TICK = int(os.getenv("MAX_CHECKS_PER_TICK", "3"))
 PLAYWRIGHT_USER_DATA = os.getenv("PLAYWRIGHT_USER_DATA", "/tmp/playwright_data")
 
 LOG_GUILD_ID = int(os.getenv("LOG_GUILD_ID", "1218472302975520839"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "1366717075271323749"))
 
-# Таймаути (збільшені для повільного сайту)
-PAGE_TIMEOUT = 30000  # 30 секунд для завантаження сторінки
+# Таймаути
+PAGE_TIMEOUT = 30000
 AUTOCOMPLETE_TIMEOUT = 3000
 RESULT_TIMEOUT = 15000
 
@@ -40,13 +40,13 @@ AUTOCOMPLETE_DATA = {"cities": [], "streets_by_city": {}}
 
 # ============ ЛОГУВАННЯ ============
 logging.basicConfig(
-    level=logging.DEBUG,  # Максимальний рівень для діагностики
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("dtekbot")
 
 intents = discord.Intents.default()
-intents.message_content = False  # Не потрібен
+intents.message_content = False
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
@@ -61,7 +61,6 @@ async def send_log_message(text: str, level: str = "INFO"):
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         full_text = f"{emoji} `{timestamp}`\n{text}"
         
-        # Ділимо на частини по 1900 символів
         for i in range(0, len(full_text), 1900):
             chunk = full_text[i:i+1900]
             channel = client.get_channel(LOG_CHANNEL_ID)
@@ -69,7 +68,7 @@ async def send_log_message(text: str, level: str = "INFO"):
                 channel = await client.fetch_channel(LOG_CHANNEL_ID)
             await channel.send(chunk)
             if i + 1900 < len(full_text):
-                await asyncio.sleep(0.5)  # Уникаємо rate limit
+                await asyncio.sleep(0.5)
     except Exception as e:
         logger.error(f"Помилка відправки логу: {e}")
 
@@ -96,13 +95,12 @@ async def init_db():
         db_pool = await asyncpg.create_pool(
             DATABASE_URL,
             min_size=1,
-            max_size=3,  # Мінімум для free плану
+            max_size=3,
             command_timeout=10,
             max_inactive_connection_lifetime=300
         )
         
         async with db_pool.acquire() as conn:
-            # Створюємо таблицю якщо не існує
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     id SERIAL PRIMARY KEY,
@@ -116,7 +114,6 @@ async def init_db():
                 );
             """)
             
-            # Міграція: додаємо error_count якщо не існує
             column_exists = await conn.fetchval("""
                 SELECT EXISTS (
                     SELECT 1 FROM information_schema.columns 
@@ -132,7 +129,6 @@ async def init_db():
                 """)
                 logger.info("Міграція error_count завершена")
             
-            # Міграція: додаємо UNIQUE constraint якщо не існує
             constraint_exists = await conn.fetchval("""
                 SELECT EXISTS (
                     SELECT 1 FROM pg_constraint 
@@ -143,7 +139,6 @@ async def init_db():
             if not constraint_exists:
                 logger.info("Виконується міграція: додавання UNIQUE constraint...")
                 try:
-                    # Спочатку видаляємо дублікати
                     await conn.execute("""
                         DELETE FROM subscriptions a USING subscriptions b
                         WHERE a.id > b.id 
@@ -153,7 +148,6 @@ async def init_db():
                         AND a.house = b.house;
                     """)
                     
-                    # Додаємо constraint
                     await conn.execute("""
                         ALTER TABLE subscriptions 
                         ADD CONSTRAINT subscriptions_discord_user_id_city_street_house_key 
@@ -163,7 +157,6 @@ async def init_db():
                 except Exception as e:
                     logger.warning(f"Не вдалося додати UNIQUE constraint: {e}")
             
-            # Створюємо індекси
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_sub_last_checked 
                     ON subscriptions(last_checked) WHERE error_count < 5;
@@ -183,12 +176,13 @@ async def add_subscription(user_id: int, city: str, street: str, house: str):
     """Додає підписку з перевіркою на дублікати"""
     async with db_pool.acquire() as conn:
         try:
-            await conn.execute("""
+            result = await conn.execute("""
                 INSERT INTO subscriptions (discord_user_id, city, street, house)
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (discord_user_id, city, street, house) DO NOTHING
             """, user_id, city, street, house)
-            return True
+            # Якщо INSERT виконався (не було конфлікту), result містить "INSERT 0 1"
+            return "INSERT 0 1" in result
         except Exception as e:
             logger.error(f"Помилка додавання підписки: {e}")
             return False
@@ -200,7 +194,7 @@ async def remove_subscriptions_for_user(user_id: int):
             "DELETE FROM subscriptions WHERE discord_user_id=$1",
             user_id
         )
-        return int(result.split()[-1])  # Кількість видалених
+        return int(result.split()[-1])
 
 async def get_user_subscriptions(user_id: int):
     """Отримує всі підписки користувача"""
@@ -242,9 +236,9 @@ async def get_total_subscriptions():
         row = await conn.fetchrow("SELECT COUNT(*) as cnt FROM subscriptions WHERE error_count < 5")
         return row['cnt']
 
-# ============ АВТОКОМПЛІТ ============
+# ============ АВТОКОМПЛІТ (ПОКРАЩЕНИЙ) ============
 def load_autocomplete_from_files():
-    """Завантаження даних для автокомпліту"""
+    """Завантаження даних для автокомпліту з підтримкою shutdowns.txt"""
     global AUTOCOMPLETE_DATA
     
     # Спроба 1: discon-schedule.js
@@ -254,7 +248,6 @@ def load_autocomplete_from_files():
             match = re.search(r"DisconSchedule\.streets\s*=\s*(\{[\s\S]*?\});", js)
             if match:
                 obj_text = match.group(1)
-                # Конвертація JS об'єкта в JSON
                 jsonish = re.sub(r"(\w+)\s*:", r'"\1":', obj_text)
                 jsonish = jsonish.replace("'", '"')
                 jsonish = re.sub(r",\s*([\]}])", r"\1", jsonish)
@@ -263,38 +256,65 @@ def load_autocomplete_from_files():
                     parsed = json.loads(jsonish)
                     AUTOCOMPLETE_DATA["cities"] = sorted(parsed.keys())
                     AUTOCOMPLETE_DATA["streets_by_city"] = parsed
-                    logger.info(f"Завантажено {len(parsed)} міст з discon-schedule.js")
+                    logger.info(f"✅ Завантажено {len(parsed)} міст з discon-schedule.js")
                     return
                 except json.JSONDecodeError:
-                    logger.warning("Не вдалося розпарсити discon-schedule.js")
+                    logger.warning("⚠️ Не вдалося розпарсити discon-schedule.js")
     except FileNotFoundError:
-        logger.info("Файл discon-schedule.js не знайдено")
+        logger.info("ℹ️ Файл discon-schedule.js не знайдено")
     
-    # Спроба 2: shutdowns.txt (фолбек)
+    # Спроба 2: shutdowns.txt (розширена обробка)
     try:
         with open("shutdowns.txt", "r", encoding="utf-8") as f:
-            text = f.read()
-            # Витягуємо кирилічні назви (міста)
-            candidates = re.findall(r"\b[А-ЯЇЄІ][а-яіїє']{2,}(?:\s+[А-ЯЇЄІ][а-яіїє']{2,})?\b", text)
-            freq = {}
-            for c in candidates:
-                freq[c] = freq.get(c, 0) + 1
+            content = f.read()
             
-            # Топ-100 найчастіших назв
-            top = sorted(freq.items(), key=lambda x: -x[1])[:100]
-            AUTOCOMPLETE_DATA["cities"] = [t[0] for t in top]
-            logger.info(f"Завантажено {len(top)} міст з shutdowns.txt")
+            # Шукаємо структуру типу:
+            # "м. Місто": ["вул. Вулиця1", "вул. Вулиця2"]
+            # "с. Село": ["вул. Вулиця"]
+            # "смт. Селище": ["вул. Вулиця"]
+            
+            city_pattern = r'"([^"]+)":\s*\[([^\]]+)\]'
+            matches = re.findall(city_pattern, content, re.MULTILINE)
+            
+            cities_data = {}
+            for city, streets_raw in matches:
+                city_clean = city.strip()
+                
+                # Парсимо вулиці (вони у лапках, через кому)
+                streets = re.findall(r'"([^"]+)"', streets_raw)
+                streets_clean = [s.strip() for s in streets if s.strip()]
+                
+                if streets_clean:
+                    cities_data[city_clean] = streets_clean
+            
+            if cities_data:
+                AUTOCOMPLETE_DATA["cities"] = sorted(cities_data.keys())
+                AUTOCOMPLETE_DATA["streets_by_city"] = cities_data
+                logger.info(f"✅ Завантажено {len(cities_data)} нас.пунктів з shutdowns.txt")
+                
+                # Логуємо приклади
+                for i, (city, streets) in enumerate(list(cities_data.items())[:3]):
+                    logger.debug(f"   [{i+1}] {city}: {len(streets)} вулиць (приклад: {streets[0] if streets else 'немає'})")
+                
+                return
+            else:
+                logger.warning("⚠️ У shutdowns.txt не знайдено структурованих даних")
+        
     except FileNotFoundError:
-        logger.warning("Файл shutdowns.txt не знайдено")
-        # Дефолтні міста
-        AUTOCOMPLETE_DATA["cities"] = [
-            "Кременчук", "Горішні Плавні", "Світловодськ",
-            "Комсомольськ", "Глобине"
-        ]
+        logger.warning("⚠️ Файл shutdowns.txt не знайдено")
+    except Exception as e:
+        logger.error(f"❌ Помилка обробки shutdowns.txt: {e}")
+    
+    # Фолбек: дефолтні міста
+    logger.warning("⚠️ Використовуються дефолтні міста")
+    AUTOCOMPLETE_DATA["cities"] = [
+        "м. Кременчук", "м. Горішні Плавні", "м. Світловодськ",
+        "м. Комсомольськ", "смт. Глобине"
+    ]
 
 load_autocomplete_from_files()
 
-# ============ PLAYWRIGHT (ОПТИМІЗОВАНО) ============
+# ============ PLAYWRIGHT (БЕЗ ЗМІН) ============
 class PlaywrightManager:
     """Менеджер для економного використання Playwright"""
     def __init__(self):
@@ -307,7 +327,6 @@ class PlaywrightManager:
     async def _ensure_browser(self):
         """Створює браузер якщо потрібно"""
         if self._context and self._last_used:
-            # Закриваємо якщо не використовувався 5 хвилин
             if datetime.now() - self._last_used > timedelta(minutes=5):
                 await self.close()
         
@@ -318,14 +337,14 @@ class PlaywrightManager:
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",  # Обхід детекції
+                    "--disable-blink-features=AutomationControlled",
                     "--disable-gpu",
                     "--disable-software-rasterizer",
                     "--disable-extensions"
                 ]
             )
             self._context = await self._browser.new_context(
-                viewport={"width": 1280, "height": 720},  # Більше для реалістичності
+                viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 locale="uk-UA",
                 timezone_id="Europe/Kyiv",
@@ -336,14 +355,12 @@ class PlaywrightManager:
                 }
             )
             
-            # Приховуємо що це автоматизація
             await self._context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
             """)
             
-            # Блокуємо непотрібні ресурси
             async def block_resources(route):
                 req = route.request
                 if req.resource_type in ("image", "media", "font"):
@@ -398,7 +415,6 @@ async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
                 
                 logger.info(f"🌐 Починаємо завантаження сторінки (спроба {attempt + 1})")
                 
-                # Завантаження з детальним логуванням
                 start_time = asyncio.get_event_loop().time()
                 try:
                     logger.debug(f"  → goto() почався...")
@@ -419,21 +435,17 @@ async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
                         continue
                     return None
                 
-                # URL перевірка
                 current_url = page.url
                 logger.debug(f"  📍 Поточний URL: {current_url}")
                 
-                # Чекаємо JS
                 logger.debug(f"  ⏳ Очікування JS (1.5с)...")
                 await asyncio.sleep(1.5)
                 
-                # Перевірка форми
                 logger.debug(f"  🔍 Пошук форми з селектором: {CITY_SEL}")
                 city_input = await page.query_selector(CITY_SEL)
                 if not city_input:
                     logger.error(f"  ❌ Форма не знайдена! Селектор: {CITY_SEL}")
                     
-                    # Додаткова діагностика
                     all_inputs = await page.query_selector_all("input")
                     logger.debug(f"  📝 Знайдено input елементів на сторінці: {len(all_inputs)}")
                     
@@ -461,7 +473,6 @@ async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
                 
                 await asyncio.sleep(0.3)
                 
-                # Очищення
                 logger.debug(f"  → Очищення поля...")
                 try:
                     await page.evaluate(f'document.querySelector("{CITY_SEL}").value = ""')
@@ -472,7 +483,6 @@ async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
                 
                 await asyncio.sleep(0.3)
                 
-                # Введення
                 logger.debug(f"  → Введення '{city}' посимвольно...")
                 try:
                     for i, char in enumerate(city):
@@ -484,7 +494,6 @@ async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
                 
                 await asyncio.sleep(1.0)
                 
-                # Автокомпліт
                 logger.debug(f"  → Очікування автокомпліту (3с)...")
                 city_ok = False
                 try:
@@ -495,7 +504,6 @@ async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
                     logger.debug(f"  📋 Знайдено варіантів: {len(items)}")
                     
                     if items and len(items) > 0:
-                        # Логуємо всі варіанти
                         for idx, item in enumerate(items[:3]):
                             text = (await item.inner_text()).strip()
                             logger.debug(f"    [{idx}] {text}")
@@ -597,7 +605,6 @@ async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
                 logger.debug(f"  ✓ Введено")
                 await asyncio.sleep(0.5)
                 
-                # Пошук кнопки
                 logger.debug(f"  → Пошук кнопки submit...")
                 submit_btn = await page.query_selector("button[type='submit'], .btn-submit, button.form__submit")
                 if submit_btn:
@@ -639,21 +646,16 @@ async def fetch_schedule_html(city: str, street: str, house: str) -> str | None:
                     result_elapsed = asyncio.get_event_loop().time() - result_start
                     logger.error(f"  ❌ Результат не з'явився за {result_elapsed:.1f}с")
                     
-                    # Максимальна діагностика
-                    logger.debug(f"  🔍 Діагностика сторінки:")
-                    
                     try:
                         page_text = await page.evaluate("document.body.innerText")
                         logger.debug(f"    Текст body (перші 300 символів):")
                         logger.debug(f"    {page_text[:300]}")
                         
-                        # Пошук помилок
                         if "не знайдено" in page_text.lower():
                             logger.warning(f"    ⚠️ Текст містить 'не знайдено'")
                         if "помилка" in page_text.lower():
                             logger.warning(f"    ⚠️ Текст містить 'помилка'")
                         
-                        # Перевірка чи є таблиця взагалі
                         tables = await page.query_selector_all("table")
                         logger.debug(f"    Знайдено таблиць на сторінці: {len(tables)}")
                         
@@ -753,7 +755,6 @@ async def worker_loop():
             
             for sub in subs:
                 try:
-                    # Отримуємо HTML
                     html = await fetch_schedule_html(sub["city"], sub["street"], sub["house"])
                     
                     if not html:
@@ -761,18 +762,14 @@ async def worker_loop():
                         await asyncio.sleep(2)
                         continue
                     
-                    # Обчислюємо хеш
                     current_hash = compute_hash(html)
                     
-                    # Якщо є зміни
                     if current_hash != (sub["last_hash"] or ""):
                         logger.info(f"Виявлено зміни для sub_id={sub['id']}: {sub['city']}, {sub['street']}, {sub['house']}")
                         
-                        # Генеруємо скріншот
                         png = await html_to_png(html)
                         
                         if png:
-                            # Відправляємо користувачу
                             success = await send_update_to_user(
                                 sub["discord_user_id"],
                                 sub["city"],
@@ -792,11 +789,9 @@ async def worker_loop():
                         else:
                             await update_subscription_hash(sub["id"], sub["last_hash"] or "", success=False)
                     else:
-                        # Без змін
                         await update_subscription_hash(sub["id"], current_hash)
                     
-                    # Пауза між перевірками
-                    await asyncio.sleep(5)  # 5 секунд між запитами
+                    await asyncio.sleep(5)
                 
                 except Exception as e:
                     logger.exception(f"Помилка при перевірці sub_id={sub['id']}: {e}")
@@ -806,12 +801,11 @@ async def worker_loop():
             logger.exception(f"Критична помилка воркера: {e}")
             await send_log_message(f"❌ Критична помилка воркера: {e}", "ERROR")
         
-        # Чекаємо до наступної перевірки
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
 # ============ SLASH-КОМАНДИ ============
 async def city_autocomplete(interaction: discord.Interaction, current: str):
-    """Автокомпліт для міст"""
+    """Автокомпліт для міст з підтримкою сіл"""
     cities = AUTOCOMPLETE_DATA.get("cities", [])
     cur_lower = current.lower()
     
@@ -824,14 +818,20 @@ async def city_autocomplete(interaction: discord.Interaction, current: str):
     return matches
 
 async def street_autocomplete(interaction: discord.Interaction, current: str):
-    """Автокомпліт для вулиць"""
+    """Автокомпліт для вулиць з підтримкою shutdowns.txt"""
     try:
-        # Отримуємо обране місто
         city = interaction.namespace.city
         if not city:
             return []
         
         streets = AUTOCOMPLETE_DATA.get("streets_by_city", {}).get(city, [])
+        
+        if not streets:
+            for key, value in AUTOCOMPLETE_DATA.get("streets_by_city", {}).items():
+                if city.lower() in key.lower() or key.lower() in city.lower():
+                    streets = value
+                    break
+        
         cur_lower = current.lower()
         
         matches = [
@@ -841,14 +841,15 @@ async def street_autocomplete(interaction: discord.Interaction, current: str):
         ][:25]
         
         return matches
-    except:
+    except Exception as e:
+        logger.error(f"❌ Помилка street_autocomplete: {e}")
         return []
 
 @tree.command(name="start", description="Підписатися на оновлення графіку відключень")
 @app_commands.describe(
-    city="Населений пункт (наприклад: Кременчук)",
-    street="Назва вулиці",
-    house="Номер будинку"
+    city="Населений пункт (м./с./смт., наприклад: с. Княжичі)",
+    street="Назва вулиці (наприклад: вул. Перемоги)",
+    house="Номер будинку (наприклад: 15А)"
 )
 @app_commands.autocomplete(city=city_autocomplete, street=street_autocomplete)
 async def cmd_start(interaction: discord.Interaction, city: str, street: str, house: str):
@@ -886,7 +887,7 @@ async def cmd_start(interaction: discord.Interaction, city: str, street: str, ho
             )
     
     except Exception as e:
-        logger.exception(f"Помилка команди /start: {e}")
+        logger.exception(f"❌ Помилка команди /start: {e}")
         await interaction.followup.send(
             "❌ Виникла помилка. Спробуйте пізніше.",
             ephemeral=True
@@ -917,7 +918,7 @@ async def cmd_stop(interaction: discord.Interaction):
             )
     
     except Exception as e:
-        logger.exception(f"Помилка команди /stop: {e}")
+        logger.exception(f"❌ Помилка команди /stop: {e}")
         await interaction.followup.send(
             "❌ Виникла помилка. Спробуйте пізніше.",
             ephemeral=True
@@ -945,7 +946,7 @@ async def cmd_list(interaction: discord.Interaction):
         await interaction.followup.send("\n".join(lines), ephemeral=True)
     
     except Exception as e:
-        logger.exception(f"Помилка команди /list: {e}")
+        logger.exception(f"❌ Помилка команди /list: {e}")
         await interaction.followup.send(
             "❌ Виникла помилка. Спробуйте пізніше.",
             ephemeral=True
@@ -969,6 +970,7 @@ async def cmd_help(interaction: discord.Interaction):
 
 **Підказки:**
 • Вводьте назви українською (кирилицею)
+• Підтримуються міста (м.), села (с.), селища (смт.)
 • Використовуйте автопідказки при введенні
 • Переконайтеся що у вас відкриті приватні повідомлення
 
@@ -978,7 +980,6 @@ async def cmd_help(interaction: discord.Interaction):
 
 @tree.command(name="stats", description="Статистика бота (тільки для адміністраторів)")
 async def cmd_stats(interaction: discord.Interaction):
-    # Перевіряємо права адміністратора
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message(
             "❌ Ця команда доступна тільки адміністраторам",
@@ -996,7 +997,6 @@ async def cmd_stats(interaction: discord.Interaction):
             errors = await conn.fetchval("SELECT COUNT(*) FROM subscriptions WHERE error_count >= 5")
             avg_errors = await conn.fetchval("SELECT AVG(error_count) FROM subscriptions WHERE error_count > 0")
             
-            # Топ проблемних адрес
             problem_subs = await conn.fetch("""
                 SELECT city, street, house, error_count 
                 FROM subscriptions 
@@ -1024,7 +1024,7 @@ async def cmd_stats(interaction: discord.Interaction):
         await interaction.followup.send(stats_text.strip(), ephemeral=True)
     
     except Exception as e:
-        logger.exception(f"Помилка команди /stats: {e}")
+        logger.exception(f"❌ Помилка команди /stats: {e}")
         await interaction.followup.send(
             "❌ Виникла помилка при отриманні статистики",
             ephemeral=True
@@ -1074,7 +1074,7 @@ async def cmd_reset_errors(interaction: discord.Interaction, city: str, street: 
                 )
     
     except Exception as e:
-        logger.exception(f"Помилка команди /reset_errors: {e}")
+        logger.exception(f"❌ Помилка команди /reset_errors: {e}")
         await interaction.followup.send(
             "❌ Виникла помилка",
             ephemeral=True
@@ -1085,50 +1085,27 @@ async def cmd_reset_errors(interaction: discord.Interaction, city: str, street: 
 async def on_ready():
     logger.info(f"✅ Бот увімкнено: {client.user} (ID: {client.user.id})")
     
-    # Додаємо Discord log handler
     discord_handler = DiscordLogHandler()
     discord_handler.setLevel(logging.WARNING)
     discord_handler.setFormatter(logging.Formatter("%(message)s"))
     logging.getLogger().addHandler(discord_handler)
     
-    # Синхронізуємо команди
     try:
         synced = await tree.sync()
-        logger.info(f"Синхронізовано {len(synced)} команд")
+        logger.info(f"✅ Синхронізовано {len(synced)} команд")
     except Exception as e:
-        logger.exception(f"Помилка синхронізації команд: {e}")
+        logger.exception(f"❌ Помилка синхронізації команд: {e}")
     
-    # Запускаємо воркер
     client.loop.create_task(worker_loop())
     
-    # Повідомляємо про старт
     await send_log_message(
         f"🚀 **Бот запущено**\n"
         f"👤 Користувач: {client.user}\n"
         f"🆔 ID: {client.user.id}\n"
-        f"📊 Guild: {LOG_GUILD_ID}\n"
+        f"📊 Нас.пунктів: {len(AUTOCOMPLETE_DATA.get('cities', []))}\n"
         f"📝 Log канал: {LOG_CHANNEL_ID}",
         "INFO"
     )
-
-@client.event
-async def on_command_error(interaction: discord.Interaction, error):
-    """Обробка помилок команд"""
-    logger.error(f"Помилка команди від {interaction.user}: {error}")
-    
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                "❌ Виникла помилка при виконанні команди",
-                ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                "❌ Виникла помилка при виконанні команди",
-                ephemeral=True
-            )
-    except:
-        pass
 
 # ============ GRACEFUL SHUTDOWN ============
 async def shutdown():
@@ -1136,14 +1113,11 @@ async def shutdown():
     logger.info("Завершення роботи бота...")
     
     try:
-        # Закриваємо браузер
         await pw_manager.close()
         
-        # Закриваємо пул БД
         if db_pool:
             await db_pool.close()
         
-        # Закриваємо Discord з'єднання
         await client.close()
         
         logger.info("Бот завершив роботу")
@@ -1158,10 +1132,8 @@ async def main():
         raise SystemExit(1)
     
     try:
-        # Ініціалізуємо БД
         await init_db()
         
-        # Запускаємо бота
         async with client:
             await client.start(DISCORD_TOKEN)
     except KeyboardInterrupt:
